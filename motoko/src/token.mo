@@ -8,6 +8,7 @@
 
 import HashMap "mo:base/HashMap";
 import Principal "mo:base/Principal";
+import Account "./account";
 import Types "./types";
 import Time "mo:base/Time";
 import Iter "mo:base/Iter";
@@ -16,6 +17,7 @@ import Option "mo:base/Option";
 import Order "mo:base/Order";
 import Nat "mo:base/Nat";
 import Nat64 "mo:base/Nat64";
+import Nat8 "mo:base/Nat8";
 import Result "mo:base/Result";
 import Text "mo:base/Text";
 import ExperimentalCycles "mo:base/ExperimentalCycles";
@@ -462,6 +464,102 @@ shared(msg) actor class Token(
             };
         }
     };
+
+    /*
+    * ICRC-1 Implementation Methods
+    * https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-1/README.md
+    */
+
+    public query func icrc1_name() : async Text {
+        return name_;
+    };
+
+    public query func icrc1_symbol() : async Text {
+        return symbol_;
+    };
+
+    public query func icrc1_decimals() : async Nat8 {
+        return decimals_;
+    };
+
+    public query func icrc1_fee() : async Nat {
+        return fee;
+    };
+
+    public type ICRC1MetadataValue = {
+        #Nat: Nat;
+        #Int: Int;
+        #Text: Text;
+        #Blob: Blob;
+    };
+
+    public query func icrc1_metadata() : async [(Text, ICRC1MetadataValue)] {
+        [
+            ("icrc1:symbol", #Text(symbol_)),
+            ("icrc1:name", #Text(name_)),
+            ("icrc1:decimals", #Nat(Nat8.toNat(decimals_))),
+            ("icrc1:fee", #Nat(fee)),
+        ]
+    };
+
+    public query func icrc1_total_supply() : async Nat {
+        return totalSupply_;
+    };
+
+    public query func icrc1_minting_account() : async ?Account.Account {
+        // TODO: Implement this
+        null
+    };
+
+    public query func icrc1_balance_of(a: Account.Account) : async Nat {
+        // TODO: Implement this
+        0
+    };
+
+    public type ICRC1TransferArgs = {
+        from_subaccount: ?Account.Subaccount;
+        to: Account.Account;
+        amount: Nat;
+        fee: ?Nat;
+        memo: ?Blob;
+        created_at_time: ?Nat64;
+    };
+
+    public type ICRC1TransferError = {
+        #BadFee: { expected_fee: Nat };
+        #BadBurn: { min_burn_amount: Nat };
+        #InsufficientFunds: { balance: Nat };
+        #TooOld;
+        #CreatedInFuture: { ledger_time: Nat64 };
+        #Duplicate: { duplicate_of: Nat };
+        #TemporarilyUnavailable;
+        #GenericError: { error_code: Nat; message: Text };
+    };
+
+    public type ICRC1TransferResult = {
+        #Ok: Nat;
+        #Err: ICRC1TransferError;
+    };
+
+    public func icrc1_transfer(a: Account.Account) : async ICRC1TransferResult {
+        // TODO: Implement this
+        #Err(#TemporarilyUnavailable)
+    };
+
+    public type ICRC1Standard = {
+        name: Text;
+        url: Text;
+    };
+
+    public query func icrc1_supported_standards(a: Account.Account) : async [ICRC1Standard] {
+        [
+            { name = "ICRC-1"; url = "https://github.com/dfinity/ICRC-1" },
+            { name = "DIP-20"; url = "https://github.com/Psychedelic/DIP20" }
+        ]
+    };
+
+
+
 
     /*
     * upgrade functions
