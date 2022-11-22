@@ -33,6 +33,9 @@ shared(msg) actor class Token(
     _owner: Principal,
     _fee: Nat
     ) = this {
+    const TX_WINDOW = 0; // TODO: 24 hours
+    const PERMITTED_DRIFT = 0; // TODO: 2 minutes
+
     type Operation = Types.Operation;
     type TransactionStatus = Types.TransactionStatus;
     type TxRecord = Types.TxRecord;
@@ -68,8 +71,9 @@ shared(msg) actor class Token(
     private stable var symbol_ : Text = _symbol;
     private stable var totalSupply_ : Nat = _totalSupply;
     private stable var blackhole : Principal = Principal.fromText("aaaaa-aa");
-    private stable var feeTo : Principal = owner_;
+    private stable var feeTo : Account.Account = Account.fromPrincipal(owner_, null);
     private stable var fee : Nat = _fee;
+    private stable var mintingAccount : ?Account.Account = null;
     private stable var balanceEntries : [(Principal, Nat)] = [];
     private stable var allowanceEntries : [(Principal, [(Principal, Nat)])] = [];
     private var balances = HashMap.HashMap<Principal, Nat>(1, Principal.equal, Principal.hash);
@@ -108,13 +112,13 @@ shared(msg) actor class Token(
         ignore c.insert(record);
     };
 
-    private func _chargeFee(from: Principal, fee: Nat) {
+    private func _chargeFee(from: Account.Account, fee: Nat) {
         if(fee > 0) {
             _transfer(from, feeTo, fee);
         };
     };
 
-    private func _transfer(from: Principal, to: Principal, value: Nat) {
+    private func _transfer(from: Account.Account, to: Account.Account, value: Nat) {
         let from_balance = _balanceOf(from);
         let from_balance_new : Nat = from_balance - value;
         if (from_balance_new != 0) { balances.put(from, from_balance_new); }
@@ -125,14 +129,14 @@ shared(msg) actor class Token(
         if (to_balance_new != 0) { balances.put(to, to_balance_new); };
     };
 
-    private func _balanceOf(who: Principal) : Nat {
+    private func _balanceOf(who: Account.Account) : Nat {
         switch (balances.get(who)) {
             case (?balance) { return balance; };
             case (_) { return 0; };
         }
     };
 
-    private func _allowance(owner: Principal, spender: Principal) : Nat {
+    private func _allowance(owner: Account.Account, spender: Principal) : Nat {
         switch(allowances.get(owner)) {
             case (?allowance_owner) {
                 switch(allowance_owner.get(spender)) {
@@ -159,9 +163,10 @@ shared(msg) actor class Token(
 
     /// Transfers value amount of tokens to Principal to.
     public shared(msg) func transfer(to: Principal, value: Nat) : async TxReceipt {
-        if (_balanceOf(msg.caller) < value + fee) { return #Err(#InsufficientBalance); };
-        _chargeFee(msg.caller, fee);
-        _transfer(msg.caller, to, value);
+        let fromAccount = Account.fromPrincipal(msg.caller, null);
+        if (_balanceOf(fromAccount) < value + fee) { return #Err(#InsufficientBalance); };
+        _chargeFee(fromAccount, fee);
+        _transfer(fromAccount, Account.fromPrincipal(to, null), value);
         ignore addRecord(
             msg.caller, "transfer",
             [
@@ -176,22 +181,23 @@ shared(msg) actor class Token(
 
     /// Transfers value amount of tokens from Principal from to Principal to.
     public shared(msg) func transferFrom(from: Principal, to: Principal, value: Nat) : async TxReceipt {
-        if (_balanceOf(from) < value + fee) { return #Err(#InsufficientBalance); };
-        let allowed : Nat = _allowance(from, msg.caller);
+        let fromAccount = Account.fromPrincipal(from, null);
+        if (_balanceOf(fromAccount) < value + fee) { return #Err(#InsufficientBalance); };
+        let allowed : Nat = _allowance(fromAccount, msg.caller);
         if (allowed < value + fee) { return #Err(#InsufficientAllowance); };
-        _chargeFee(from, fee);
-        _transfer(from, to, value);
+        _chargeFee(fromAccount, fee);
+        _transfer(fromAccount, Account.fromPrincipal(to, null), value);
         let allowed_new : Nat = allowed - value - fee;
         if (allowed_new != 0) {
-            let allowance_from = Types.unwrap(allowances.get(from));
+            let allowance_from = Types.unwrap(allowances.get(fromAccount));
             allowance_from.put(msg.caller, allowed_new);
-            allowances.put(from, allowance_from);
+            allowances.put(fromAccount, allowance_from);
         } else {
             if (allowed != 0) {
-                let allowance_from = Types.unwrap(allowances.get(from));
+                let allowance_from = Types.unwrap(allowances.get(fromAccount));
                 allowance_from.delete(msg.caller);
-                if (allowance_from.size() == 0) { allowances.delete(from); }
-                else { allowances.put(from, allowance_from); };
+                if (allowance_from.size() == 0) { allowances.delete(fromAccount); }
+                else { allowances.put(fromAccount, allowance_from); };
             };
         };
         ignore addRecord(
@@ -210,22 +216,23 @@ shared(msg) actor class Token(
     /// Allows spender to withdraw from your account multiple times, up to the value amount.
     /// If this function is called again it overwrites the current allowance with value.
     public shared(msg) func approve(spender: Principal, value: Nat) : async TxReceipt {
-        if(_balanceOf(msg.caller) < fee) { return #Err(#InsufficientBalance); };
-        _chargeFee(msg.caller, fee);
+        let fromAccount = Account.fromPrincipal(msg.caller, null);
+        if(_balanceOf(fromAccount) < fee) { return #Err(#InsufficientBalance); };
+        _chargeFee(fromAccount, fee);
         let v = value + fee;
-        if (value == 0 and Option.isSome(allowances.get(msg.caller))) {
-            let allowance_caller = Types.unwrap(allowances.get(msg.caller));
+        if (value == 0 and Option.isSome(allowances.get(fromAccount))) {
+            let allowance_caller = Types.unwrap(allowances.get(fromAccount));
             allowance_caller.delete(spender);
-            if (allowance_caller.size() == 0) { allowances.delete(msg.caller); }
-            else { allowances.put(msg.caller, allowance_caller); };
-        } else if (value != 0 and Option.isNull(allowances.get(msg.caller))) {
+            if (allowance_caller.size() == 0) { allowances.delete(fromAccount); }
+            else { allowances.put(fromAccount, allowance_caller); };
+        } else if (value != 0 and Option.isNull(allowances.get(fromAccount))) {
             var temp = HashMap.HashMap<Principal, Nat>(1, Principal.equal, Principal.hash);
             temp.put(spender, v);
-            allowances.put(msg.caller, temp);
-        } else if (value != 0 and Option.isSome(allowances.get(msg.caller))) {
-            let allowance_caller = Types.unwrap(allowances.get(msg.caller));
+            allowances.put(fromAccount, temp);
+        } else if (value != 0 and Option.isSome(allowances.get(fromAccount))) {
+            let allowance_caller = Types.unwrap(allowances.get(fromAccount));
             allowance_caller.put(spender, v);
-            allowances.put(msg.caller, allowance_caller);
+            allowances.put(fromAccount, allowance_caller);
         };
         ignore addRecord(
             msg.caller, "approve",
@@ -243,9 +250,10 @@ shared(msg) actor class Token(
         if(msg.caller != owner_) {
             return #Err(#Unauthorized);
         };
-        let to_balance = _balanceOf(to);
+        let toAccount = Account.toPrincipal(to, null);
+        let to_balance = _balanceOf(toAccount);
         totalSupply_ += value;
-        balances.put(to, to_balance + value);
+        balances.put(toAccount, to_balance + value);
         ignore addRecord(
             msg.caller, "mint",
             [
@@ -263,9 +271,10 @@ shared(msg) actor class Token(
             return #Err(#Unauthorized);
         };
         for ((to, value) in mints.vals()) {
-            let to_balance = _balanceOf(to);
+            let toAccount = Account.fromPrincipal(to, null);
+            let to_balance = _balanceOf(toAccount);
             totalSupply_ += value;
-            balances.put(to, to_balance + value);
+            balances.put(toAccount, to_balance + value);
             ignore addRecord(
                 msg.caller, "mint",
                 [
@@ -283,12 +292,13 @@ shared(msg) actor class Token(
         if(msg.caller != owner_ and msg.caller != user) {
             return #Err(#Unauthorized);
         };
-        let from_balance = _balanceOf(user);
+        let fromAccount = Account.fromPrincipal(user, null);
+        let from_balance = _balanceOf(fromAccount);
         if(from_balance < amount) {
             return #Err(#InsufficientBalance);
         };
         totalSupply_ -= amount;
-        balances.put(user, from_balance - amount);
+        balances.put(fromAccount, from_balance - amount);
         ignore addRecord(
             user, "burn",
             [
@@ -302,12 +312,13 @@ shared(msg) actor class Token(
     };
 
     public shared(msg) func burn(amount: Nat): async TxReceipt {
-        let from_balance = _balanceOf(msg.caller);
+        let fromAccount = Account.fromPrincipal(msg.caller, null);
+        let from_balance = _balanceOf(fromAccount);
         if(from_balance < amount) {
             return #Err(#InsufficientBalance);
         };
         totalSupply_ -= amount;
-        balances.put(msg.caller, from_balance - amount);
+        balances.put(fromAccount, from_balance - amount);
         ignore addRecord(
             msg.caller, "burn",
             [
@@ -345,11 +356,11 @@ shared(msg) actor class Token(
     };
 
     public query func balanceOf(who: Principal) : async Nat {
-        return _balanceOf(who);
+        return _balanceOf(Account.fromPrincipal(who, null));
     };
 
     public query func allowance(owner: Principal, spender: Principal) : async Nat {
-        return _allowance(owner, spender);
+        return _allowance(Account.fromPrincipal(owner, null), spender);
     };
 
     public query func getMetadata() : async Metadata {
@@ -400,6 +411,11 @@ shared(msg) actor class Token(
         owner_ := _owner;
     };
 
+    public shared(msg) func setMintingAccount(_mintingAccount: ?Account.Account) : async () {
+        assert(msg.caller == owner_);
+        mintingAccount := _mintingAccount;
+    };
+
     public type TokenInfo = {
         metadata: Metadata;
         feeTo: Principal;
@@ -428,7 +444,8 @@ shared(msg) actor class Token(
         }
     };
 
-    public query func getHolders(start: Nat, limit: Nat) : async [(Principal, Nat)] {
+    // TODO: Update this to accounts
+    public query func getHolders(start: Nat, limit: Nat) : async [(Account, Nat)] {
         let temp =  Iter.toArray(balances.entries());
         func order (a: (Principal, Nat), b: (Principal, Nat)) : Order.Order {
             return Nat.compare(b.1, a.1);
@@ -455,7 +472,7 @@ shared(msg) actor class Token(
     };
 
     public query func getUserApprovals(who : Principal) : async [(Principal, Nat)] {
-        switch (allowances.get(who)) {
+        switch (allowances.get(Account.fromPrincipal(who, null))) {
             case (?allowance_who) {
                 return Iter.toArray(allowance_who.entries());
             };
@@ -506,14 +523,13 @@ shared(msg) actor class Token(
         return totalSupply_;
     };
 
+
     public query func icrc1_minting_account() : async ?Account.Account {
-        // TODO: Implement this
-        null
+        return mintingAccount;
     };
 
-    public query func icrc1_balance_of(a: Account.Account) : async Nat {
-        // TODO: Implement this
-        0
+    public query func icrc1_balance_of(account: Account.Account) : async Nat {
+        return _balanceOf(account);
     };
 
     public type ICRC1TransferArgs = {
@@ -541,9 +557,24 @@ shared(msg) actor class Token(
         #Err: ICRC1TransferError;
     };
 
-    public func icrc1_transfer(a: Account.Account) : async ICRC1TransferResult {
-        // TODO: Implement this
-        #Err(#TemporarilyUnavailable)
+    // TODO: Handle mint/burn txns
+    public shared(msg) func icrc1_transfer(args: ICRC1TransferArgs) : async ICRC1TransferResult {
+        let fromAccount = Account.fromPrincipal(msg.caller, args.from_subaccount);
+        if (args.fee != null and args.fee != ?fee) {  return #Err(#BadFee({expected_fee = fee})); };
+        let balance = _balanceOf(fromAccount);
+        if (balance < value + fee) { return #Err(#InsufficientFunds({balance = balance})); };
+        _chargeFee(fromAccount, fee);
+        _transfer(fromAccount, args.to, value);
+        ignore addRecord(
+            msg.caller, "transfer",
+            [
+                ("to", #Principal(args.to.owner)),
+                ("value", #U64(u64(value))),
+                ("fee", #U64(u64(fee)))
+            ]
+        );
+        txcounter += 1;
+        return #Ok(txcounter - 1);
     };
 
     public type ICRC1Standard = {
