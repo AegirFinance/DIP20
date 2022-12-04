@@ -6,6 +6,7 @@
  * Stability  : Experimental
  */
 
+import Buffer "mo:base/Buffer";
 import HashMap "mo:base/HashMap";
 import Principal "mo:base/Principal";
 import Account "./account";
@@ -33,8 +34,26 @@ shared(msg) actor class Token(
     _owner: Principal,
     _fee: Nat
     ) = this {
-    const TX_WINDOW = 0; // TODO: 24 hours
-    const PERMITTED_DRIFT = 0; // TODO: 2 minutes
+    let TX_WINDOW = 0; // TODO: 24 hours
+    let PERMITTED_DRIFT = 0; // TODO: 2 minutes
+
+    type UpgradeData = {
+        #v1: {
+            owner : Principal;
+            logo : Text;
+            name : Text;
+            decimals : Nat8;
+            symbol : Text;
+            totalSupply : Nat;
+            blackhole : Principal;
+            feeTo : Account.Account;
+            fee : Nat;
+            mintingAccount : ?Account.Account;
+            balances : [(Account.Account, Nat)];
+            allowances : [(Account.Account, [(Principal, Nat)])];
+        };
+    };
+    private stable var upgradeData: ?UpgradeData = null;
 
     type Operation = Types.Operation;
     type TransactionStatus = Types.TransactionStatus;
@@ -78,7 +97,13 @@ shared(msg) actor class Token(
     private stable var allowanceEntries : [(Principal, [(Principal, Nat)])] = [];
     private var balances = HashMap.HashMap<Principal, Nat>(1, Principal.equal, Principal.hash);
     private var allowances = HashMap.HashMap<Principal, HashMap.HashMap<Principal, Nat>>(1, Principal.equal, Principal.hash);
+
+    private var accountBalances = HashMap.HashMap<Account.Account, Nat>(1, Account.equal, Account.hash);
+    private var accountAllowances = HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Nat>>(1, Account.equal, Account.hash);
+
     balances.put(owner_, totalSupply_);
+    accountBalances.put(Account.fromPrincipal(owner_, null), totalSupply_);
+
     private stable let genesis : TxRecord = {
         caller = ?owner_;
         op = #mint;
@@ -121,23 +146,23 @@ shared(msg) actor class Token(
     private func _transfer(from: Account.Account, to: Account.Account, value: Nat) {
         let from_balance = _balanceOf(from);
         let from_balance_new : Nat = from_balance - value;
-        if (from_balance_new != 0) { balances.put(from, from_balance_new); }
-        else { balances.delete(from); };
+        if (from_balance_new != 0) { accountBalances.put(from, from_balance_new); }
+        else { accountBalances.delete(from); };
 
         let to_balance = _balanceOf(to);
         let to_balance_new : Nat = to_balance + value;
-        if (to_balance_new != 0) { balances.put(to, to_balance_new); };
+        if (to_balance_new != 0) { accountBalances.put(to, to_balance_new); };
     };
 
     private func _balanceOf(who: Account.Account) : Nat {
-        switch (balances.get(who)) {
+        switch (accountBalances.get(who)) {
             case (?balance) { return balance; };
             case (_) { return 0; };
         }
     };
 
     private func _allowance(owner: Account.Account, spender: Principal) : Nat {
-        switch(allowances.get(owner)) {
+        switch (accountAllowances.get(owner)) {
             case (?allowance_owner) {
                 switch(allowance_owner.get(spender)) {
                     case (?allowance) { return allowance; };
@@ -189,15 +214,15 @@ shared(msg) actor class Token(
         _transfer(fromAccount, Account.fromPrincipal(to, null), value);
         let allowed_new : Nat = allowed - value - fee;
         if (allowed_new != 0) {
-            let allowance_from = Types.unwrap(allowances.get(fromAccount));
+            let allowance_from = Types.unwrap(accountAllowances.get(fromAccount));
             allowance_from.put(msg.caller, allowed_new);
-            allowances.put(fromAccount, allowance_from);
+            accountAllowances.put(fromAccount, allowance_from);
         } else {
             if (allowed != 0) {
-                let allowance_from = Types.unwrap(allowances.get(fromAccount));
+                let allowance_from = Types.unwrap(accountAllowances.get(fromAccount));
                 allowance_from.delete(msg.caller);
-                if (allowance_from.size() == 0) { allowances.delete(fromAccount); }
-                else { allowances.put(fromAccount, allowance_from); };
+                if (allowance_from.size() == 0) { accountAllowances.delete(fromAccount); }
+                else { accountAllowances.put(fromAccount, allowance_from); };
             };
         };
         ignore addRecord(
@@ -220,19 +245,19 @@ shared(msg) actor class Token(
         if(_balanceOf(fromAccount) < fee) { return #Err(#InsufficientBalance); };
         _chargeFee(fromAccount, fee);
         let v = value + fee;
-        if (value == 0 and Option.isSome(allowances.get(fromAccount))) {
-            let allowance_caller = Types.unwrap(allowances.get(fromAccount));
+        if (value == 0 and Option.isSome(accountAllowances.get(fromAccount))) {
+            let allowance_caller = Types.unwrap(accountAllowances.get(fromAccount));
             allowance_caller.delete(spender);
-            if (allowance_caller.size() == 0) { allowances.delete(fromAccount); }
-            else { allowances.put(fromAccount, allowance_caller); };
-        } else if (value != 0 and Option.isNull(allowances.get(fromAccount))) {
+            if (allowance_caller.size() == 0) { accountAllowances.delete(fromAccount); }
+            else { accountAllowances.put(fromAccount, allowance_caller); };
+        } else if (value != 0 and Option.isNull(accountAllowances.get(fromAccount))) {
             var temp = HashMap.HashMap<Principal, Nat>(1, Principal.equal, Principal.hash);
             temp.put(spender, v);
-            allowances.put(fromAccount, temp);
-        } else if (value != 0 and Option.isSome(allowances.get(fromAccount))) {
-            let allowance_caller = Types.unwrap(allowances.get(fromAccount));
+            accountAllowances.put(fromAccount, temp);
+        } else if (value != 0 and Option.isSome(accountAllowances.get(fromAccount))) {
+            let allowance_caller = Types.unwrap(accountAllowances.get(fromAccount));
             allowance_caller.put(spender, v);
-            allowances.put(fromAccount, allowance_caller);
+            accountAllowances.put(fromAccount, allowance_caller);
         };
         ignore addRecord(
             msg.caller, "approve",
@@ -250,10 +275,10 @@ shared(msg) actor class Token(
         if(msg.caller != owner_) {
             return #Err(#Unauthorized);
         };
-        let toAccount = Account.toPrincipal(to, null);
+        let toAccount = Account.fromPrincipal(to, null);
         let to_balance = _balanceOf(toAccount);
         totalSupply_ += value;
-        balances.put(toAccount, to_balance + value);
+        accountBalances.put(toAccount, to_balance + value);
         ignore addRecord(
             msg.caller, "mint",
             [
@@ -274,7 +299,7 @@ shared(msg) actor class Token(
             let toAccount = Account.fromPrincipal(to, null);
             let to_balance = _balanceOf(toAccount);
             totalSupply_ += value;
-            balances.put(toAccount, to_balance + value);
+            accountBalances.put(toAccount, to_balance + value);
             ignore addRecord(
                 msg.caller, "mint",
                 [
@@ -298,7 +323,7 @@ shared(msg) actor class Token(
             return #Err(#InsufficientBalance);
         };
         totalSupply_ -= amount;
-        balances.put(fromAccount, from_balance - amount);
+        accountBalances.put(fromAccount, from_balance - amount);
         ignore addRecord(
             user, "burn",
             [
@@ -318,7 +343,7 @@ shared(msg) actor class Token(
             return #Err(#InsufficientBalance);
         };
         totalSupply_ -= amount;
-        balances.put(fromAccount, from_balance - amount);
+        accountBalances.put(fromAccount, from_balance - amount);
         ignore addRecord(
             msg.caller, "burn",
             [
@@ -398,7 +423,7 @@ shared(msg) actor class Token(
 
     public shared(msg) func setFeeTo(to: Principal) {
         assert(msg.caller == owner_);
-        feeTo := to;
+        feeTo := Account.fromPrincipal(to, null);
     };
 
     public shared(msg) func setFee(_fee: Nat) {
@@ -436,18 +461,18 @@ shared(msg) actor class Token(
                 owner = owner_;
                 fee = fee;
             };
-            feeTo = feeTo;
+            // TODO: Bit of a backwards-compatibility hack with dip-20
+            feeTo = feeTo.owner;
             historySize = txcounter;
             deployTime = genesis.timestamp;
-            holderNumber = balances.size();
+            holderNumber = accountBalances.size();
             cycles = ExperimentalCycles.balance();
         }
     };
 
-    // TODO: Update this to accounts
-    public query func getHolders(start: Nat, limit: Nat) : async [(Account, Nat)] {
-        let temp =  Iter.toArray(balances.entries());
-        func order (a: (Principal, Nat), b: (Principal, Nat)) : Order.Order {
+    public query func getHolders(start: Nat, limit: Nat) : async [(Account.Account, Nat)] {
+        let temp =  Iter.toArray(accountBalances.entries());
+        func order (a: (Account.Account, Nat), b: (Account.Account, Nat)) : Order.Order {
             return Nat.compare(b.1, a.1);
         };
         let sorted = Array.sort(temp, order);
@@ -456,7 +481,7 @@ shared(msg) actor class Token(
         } else {
             limit
         };
-        let res = Array.init<(Principal, Nat)>(limit_, (owner_, 0));
+        let res = Array.init<(Account.Account, Nat)>(limit_, (Account.fromPrincipal(owner_, null), 0));
         for (i in Iter.range(0, limit_ - 1)) {
             res[i] := sorted[i+start];
         };
@@ -465,14 +490,14 @@ shared(msg) actor class Token(
 
     public query func getAllowanceSize() : async Nat {
         var size : Nat = 0;
-        for ((k, v) in allowances.entries()) {
+        for ((k, v) in accountAllowances.entries()) {
             size += v.size();
         };
         return size;
     };
 
     public query func getUserApprovals(who : Principal) : async [(Principal, Nat)] {
-        switch (allowances.get(Account.fromPrincipal(who, null))) {
+        switch (accountAllowances.get(Account.fromPrincipal(who, null))) {
             case (?allowance_who) {
                 return Iter.toArray(allowance_who.entries());
             };
@@ -562,14 +587,14 @@ shared(msg) actor class Token(
         let fromAccount = Account.fromPrincipal(msg.caller, args.from_subaccount);
         if (args.fee != null and args.fee != ?fee) {  return #Err(#BadFee({expected_fee = fee})); };
         let balance = _balanceOf(fromAccount);
-        if (balance < value + fee) { return #Err(#InsufficientFunds({balance = balance})); };
+        if (balance < args.amount + fee) { return #Err(#InsufficientFunds({balance = balance})); };
         _chargeFee(fromAccount, fee);
-        _transfer(fromAccount, args.to, value);
+        _transfer(fromAccount, args.to, args.amount);
         ignore addRecord(
             msg.caller, "transfer",
             [
                 ("to", #Principal(args.to.owner)),
-                ("value", #U64(u64(value))),
+                ("value", #U64(u64(args.amount))),
                 ("fee", #U64(u64(fee)))
             ]
         );
@@ -596,24 +621,64 @@ shared(msg) actor class Token(
     * upgrade functions
     */
     system func preupgrade() {
-        balanceEntries := Iter.toArray(balances.entries());
-        var size : Nat = allowances.size();
-        var temp : [var (Principal, [(Principal, Nat)])] = Array.init<(Principal, [(Principal, Nat)])>(size, (owner_, []));
-        size := 0;
-        for ((k, v) in allowances.entries()) {
-            temp[size] := (k, Iter.toArray(v.entries()));
-            size += 1;
+        var allowancesTemp = Buffer.Buffer<(Account.Account, [(Principal, Nat)])>(accountAllowances.size());
+        for ((k, v) in accountAllowances.entries()) {
+            allowancesTemp.add((k, Iter.toArray(v.entries())));
         };
-        allowanceEntries := Array.freeze(temp);
+
+        upgradeData := ?#v1({
+            owner = owner_;
+            logo = logo_;
+            name = name_;
+            decimals = decimals_;
+            symbol = symbol_;
+            totalSupply = totalSupply_;
+            blackhole = blackhole;
+            feeTo = feeTo;
+            fee = fee;
+            mintingAccount = mintingAccount;
+            balances = Iter.toArray(accountBalances.entries());
+            allowances = allowancesTemp.toArray();
+        });
     };
 
     system func postupgrade() {
-        balances := HashMap.fromIter<Principal, Nat>(balanceEntries.vals(), 1, Principal.equal, Principal.hash);
-        balanceEntries := [];
-        for ((k, v) in allowanceEntries.vals()) {
-            let allowed_temp = HashMap.fromIter<Principal, Nat>(v.vals(), 1, Principal.equal, Principal.hash);
-            allowances.put(k, allowed_temp);
+        switch (upgradeData) {
+            case (null) {
+                // Initial upgrade to this version, convert from previous stable storage
+                for ((k, v) in balanceEntries.vals()) {
+                    accountBalances.put(Account.fromPrincipal(k, null), v);
+                };
+                balanceEntries := [];
+                for ((k, v) in allowanceEntries.vals()) {
+                    let allowed_temp = HashMap.fromIter<Principal, Nat>(v.vals(), 1, Principal.equal, Principal.hash);
+                    accountAllowances.put(Account.fromPrincipal(k, null), allowed_temp);
+                };
+                allowanceEntries := [];
+            };
+            case (?#v1(data)) {
+                // Normal update
+                owner_ := data.owner;
+                logo_ := data.logo;
+                name_ := data.name;
+                decimals_ := data.decimals;
+                symbol_ := data.symbol;
+                totalSupply_ := data.totalSupply;
+                blackhole := data.blackhole;
+                feeTo := data.feeTo;
+                fee := data.fee;
+                mintingAccount := data.mintingAccount;
+
+                accountBalances := HashMap.fromIter<Account.Account, Nat>(data.balances.vals(), 1, Account.equal, Account.hash);
+
+                accountAllowances := HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Nat>>(data.allowances.size(), Account.equal, Account.hash);
+                for ((k, v) in data.allowances.vals()) {
+                    let allowed_temp = HashMap.fromIter<Principal, Nat>(v.vals(), 1, Principal.equal, Principal.hash);
+                    accountAllowances.put(k, allowed_temp);
+                };
+
+                upgradeData := null;
+            };
         };
-        allowanceEntries := [];
     };
 };

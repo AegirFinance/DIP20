@@ -25,11 +25,8 @@ module {
 
     public func fromPrincipal(owner: Principal, subaccount: ?Subaccount): Account {
         {
-            owner = owner,
-            subaccount = switch (subaccount) {
-                case (null) { defaultSubaccount() };
-                case (?s) { s };
-            }
+            owner = owner;
+            subaccount = subaccount;
         }
     };
 
@@ -82,7 +79,9 @@ module {
     };
 
     public func equal(a: Account, b: Account) : Bool {
-        if (!Principal.equal(a.owner, b.owner)) { return false; };
+        if (not Principal.equal(a.owner, b.owner)) {
+            return false;
+        };
         switch (a.subaccount, b.subaccount) {
             case (?a_sub, ?b_sub) { Blob.equal(a_sub, b_sub) };
             case (null, null) { true };
@@ -92,8 +91,8 @@ module {
 
     public func hash(a: Account) : Nat32 {
         let subaccount = switch (a.subaccount) {
-            case (null) { defaultSubaccount() }
-            case (?sub) { sub }
+            case (null) { defaultSubaccount() };
+            case (?sub) { sub };
         };
         Principal.hash(a.owner) ^ Blob.hash(subaccount)
     };
