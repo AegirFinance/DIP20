@@ -34,8 +34,8 @@ shared(msg) actor class Token(
     _owner: Principal,
     _fee: Nat
     ) = this {
-    let TX_WINDOW = 0; // TODO: 24 hours
-    let PERMITTED_DRIFT = 0; // TODO: 2 minutes
+    let TX_WINDOW: Int = 86_400_000_000_000; // 24 hours in ns
+    let PERMITTED_DRIFT: Int = 120_000_000_000; // 2 minutes in ns
 
     type UpgradeData = {
         #v1: {
@@ -51,6 +51,7 @@ shared(msg) actor class Token(
             mintingAccount : ?Account.Account;
             balances : [(Account.Account, Nat)];
             allowances : [(Account.Account, [(Principal, Nat)])];
+            duplicates : [(Text, Nat)];
         };
     };
     private stable var upgradeData: ?UpgradeData = null;
@@ -100,6 +101,7 @@ shared(msg) actor class Token(
 
     private var accountBalances = HashMap.HashMap<Account.Account, Nat>(1, Account.equal, Account.hash);
     private var accountAllowances = HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Nat>>(1, Account.equal, Account.hash);
+    private var duplicates = HashMap.HashMap<Text, Nat>(0, Text.equal, Text.hash);
 
     balances.put(owner_, totalSupply_);
     accountBalances.put(Account.fromPrincipal(owner_, null), totalSupply_);
@@ -582,24 +584,84 @@ shared(msg) actor class Token(
         #Err: ICRC1TransferError;
     };
 
-    // TODO: Handle mint/burn txns
     public shared(msg) func icrc1_transfer(args: ICRC1TransferArgs) : async ICRC1TransferResult {
         let fromAccount = Account.fromPrincipal(msg.caller, args.from_subaccount);
-        if (args.fee != null and args.fee != ?fee) {  return #Err(#BadFee({expected_fee = fee})); };
-        let balance = _balanceOf(fromAccount);
-        if (balance < args.amount + fee) { return #Err(#InsufficientFunds({balance = balance})); };
-        _chargeFee(fromAccount, fee);
-        _transfer(fromAccount, args.to, args.amount);
-        ignore addRecord(
-            msg.caller, "transfer",
-            [
-                ("to", #Principal(args.to.owner)),
-                ("value", #U64(u64(args.amount))),
-                ("fee", #U64(u64(fee)))
-            ]
-        );
-        txcounter += 1;
-        return #Ok(txcounter - 1);
+        let toAccount = args.to;
+        if (fromAccount == toAccount) {
+            return #Err(#GenericError({ error_code = 1; message = "Cannot transfer to same account"; }));
+        };
+        switch (args.created_at_time) {
+            case (null) {};
+            case (?t) {
+                let ledger_time = Nat64.fromnat(Int.abs(Time.now()));
+                if (t < ledger_time - TX_WINDOW - PERMITTED_DRIFT) {
+                    return #Err(#TooOld);
+                };
+                if (t > ledger_time + PERMITTED_DRIFT) {
+                    return #Err(#CreatedInFuture({ledger_time = ledger_time}));
+                };
+                // TODO: Implement this duplicate checking
+                let record: Text = hash_txn_args(msg.caller, args);
+                switch (duplicates.get(record)) {
+                    case (null) { duplicates.put(record) };
+                    case (?duplicate_of) {
+                        return #Err(#Duplicate({duplicate_of}));
+                    };
+                };
+            };
+        };
+        if (?fromAccount == mintingAccount) {
+            // This is a mint
+            let to_balance = _balanceOf(toAccount);
+            totalSupply_ += args.amount;
+            accountBalances.put(toAccount, to_balance + args.amount);
+            ignore addRecord(
+                msg.caller, "mint",
+                [
+                    ("to", #Principal(toAccount.owner)),
+                    ("value", #U64(u64(args.amount))),
+                    ("fee", #U64(u64(0)))
+                ]
+            );
+            txcounter += 1;
+            return #Ok(txcounter - 1);
+
+        } else if (toAccount == mintingAccount) {
+            // This is a burn
+            let from_balance = _balanceOf(fromAccount);
+            if(from_balance < args.amount) {
+                return #Err(#InsufficientBalance);
+            };
+            totalSupply_ -= args.amount;
+            accountBalances.put(fromAccount, from_balance - args.amount);
+            ignore addRecord(
+                msg.caller, "burn",
+                [
+                    ("from", #Principal(msg.caller)),
+                    ("value", #U64(u64(args.amount))),
+                    ("fee", #U64(u64(0)))
+                ]
+            );
+            txcounter += 1;
+            return #Ok(txcounter - 1);
+        } else {
+            // This is a normal transfer
+            if (args.fee != null and args.fee != ?fee) {  return #Err(#BadFee({expected_fee = fee})); };
+            let balance = _balanceOf(fromAccount);
+            if (balance < args.amount + fee) { return #Err(#InsufficientFunds({balance = balance})); };
+            _chargeFee(fromAccount, fee);
+            _transfer(fromAccount, args.to, args.amount);
+            ignore addRecord(
+                msg.caller, "transfer",
+                [
+                    ("to", #Principal(args.to.owner)),
+                    ("value", #U64(u64(args.amount))),
+                    ("fee", #U64(u64(fee)))
+                ]
+            );
+            txcounter += 1;
+            return #Ok(txcounter - 1);
+        }
     };
 
     public type ICRC1Standard = {
@@ -613,9 +675,6 @@ shared(msg) actor class Token(
             { name = "DIP-20"; url = "https://github.com/Psychedelic/DIP20" }
         ]
     };
-
-
-
 
     /*
     * upgrade functions
@@ -639,6 +698,7 @@ shared(msg) actor class Token(
             mintingAccount = mintingAccount;
             balances = Iter.toArray(accountBalances.entries());
             allowances = allowancesTemp.toArray();
+            duplicates = Iter.toArray(duplicates.entries());
         });
     };
 
@@ -676,6 +736,8 @@ shared(msg) actor class Token(
                     let allowed_temp = HashMap.fromIter<Principal, Nat>(v.vals(), 1, Principal.equal, Principal.hash);
                     accountAllowances.put(k, allowed_temp);
                 };
+
+                duplicates := HashMap.fromIter<Text, Nat>(data.duplicates.vals(), 0, Text.equal, Text.hash);
 
                 upgradeData := null;
             };
