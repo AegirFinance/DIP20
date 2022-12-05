@@ -8,6 +8,7 @@
 
 import Time "mo:base/Time";
 import P "mo:base/Prelude";
+import Account "./account";
 
 module {
     /// Update call operations
@@ -34,6 +35,15 @@ module {
         fee: Nat;
         timestamp: Time.Time;
         status: TransactionStatus;
+    };
+    public type Transaction = {
+        caller: Principal;
+        from_subaccount: ?Account.Subaccount;
+        to: Account.Account;
+        amount: Nat;
+        fee: ?Nat;
+        memo: ?Blob;
+        created_at_time: ?Nat64;
     };
 
     public func unwrap<T>(x : ?T) : T =

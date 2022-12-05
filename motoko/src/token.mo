@@ -12,6 +12,7 @@ import Principal "mo:base/Principal";
 import Account "./account";
 import Types "./types";
 import Time "mo:base/Time";
+import Int "mo:base/Int";
 import Iter "mo:base/Iter";
 import Array "mo:base/Array";
 import Option "mo:base/Option";
@@ -51,7 +52,7 @@ shared(msg) actor class Token(
             mintingAccount : ?Account.Account;
             balances : [(Account.Account, Nat)];
             allowances : [(Account.Account, [(Principal, Nat)])];
-            duplicates : [(Text, Nat)];
+            duplicates : [TxLogEntry];
         };
     };
     private stable var upgradeData: ?UpgradeData = null;
@@ -59,6 +60,12 @@ shared(msg) actor class Token(
     type Operation = Types.Operation;
     type TransactionStatus = Types.TransactionStatus;
     type TxRecord = Types.TxRecord;
+    type TxIndex = Nat;
+    type TxLogEntry = {
+        index : TxIndex;
+        args : Types.Transaction;
+    };
+    type TxLog = Buffer.Buffer<TxLogEntry>;
     type Metadata = {
         logo : Text;
         name : Text;
@@ -101,7 +108,7 @@ shared(msg) actor class Token(
 
     private var accountBalances = HashMap.HashMap<Account.Account, Nat>(1, Account.equal, Account.hash);
     private var accountAllowances = HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Nat>>(1, Account.equal, Account.hash);
-    private var duplicates = HashMap.HashMap<Text, Nat>(0, Text.equal, Text.hash);
+    private var duplicates = Buffer.Buffer<TxLogEntry>(1024);
 
     balances.put(owner_, totalSupply_);
     accountBalances.put(Account.fromPrincipal(owner_, null), totalSupply_);
@@ -580,7 +587,7 @@ shared(msg) actor class Token(
     };
 
     public type ICRC1TransferResult = {
-        #Ok: Nat;
+        #Ok: TxIndex;
         #Err: ICRC1TransferError;
     };
 
@@ -590,25 +597,18 @@ shared(msg) actor class Token(
         if (fromAccount == toAccount) {
             return #Err(#GenericError({ error_code = 1; message = "Cannot transfer to same account"; }));
         };
-        switch (args.created_at_time) {
-            case (null) {};
-            case (?t) {
-                let ledger_time = Nat64.fromnat(Int.abs(Time.now()));
-                if (t < ledger_time - TX_WINDOW - PERMITTED_DRIFT) {
-                    return #Err(#TooOld);
-                };
-                if (t > ledger_time + PERMITTED_DRIFT) {
-                    return #Err(#CreatedInFuture({ledger_time = ledger_time}));
-                };
-                // TODO: Implement this duplicate checking
-                let record: Text = hash_txn_args(msg.caller, args);
-                switch (duplicates.get(record)) {
-                    case (null) { duplicates.put(record) };
-                    case (?duplicate_of) {
-                        return #Err(#Duplicate({duplicate_of}));
-                    };
-                };
-            };
+        let record: Types.Transaction = {
+            caller = msg.caller;
+            from_subaccount = args.from_subaccount;
+            to = args.to;
+            amount = args.amount;
+            fee = args.fee;
+            memo = args.memo;
+            created_at_time = args.created_at_time;
+        };
+        switch (dedupeTransaction(record)) {
+            case (#ok) {};
+            case (#err(e)) { return #Err(e) };
         };
         if (?fromAccount == mintingAccount) {
             // This is a mint
@@ -623,17 +623,14 @@ shared(msg) actor class Token(
                     ("fee", #U64(u64(0)))
                 ]
             );
-            txcounter += 1;
-            return #Ok(txcounter - 1);
-
-        } else if (toAccount == mintingAccount) {
+        } else if (?toAccount == mintingAccount) {
             // This is a burn
-            let from_balance = _balanceOf(fromAccount);
-            if(from_balance < args.amount) {
-                return #Err(#InsufficientBalance);
+            let balance = _balanceOf(fromAccount);
+            if(balance < args.amount) {
+                return #Err(#InsufficientFunds({balance = balance}));
             };
             totalSupply_ -= args.amount;
-            accountBalances.put(fromAccount, from_balance - args.amount);
+            accountBalances.put(fromAccount, balance - args.amount);
             ignore addRecord(
                 msg.caller, "burn",
                 [
@@ -642,8 +639,6 @@ shared(msg) actor class Token(
                     ("fee", #U64(u64(0)))
                 ]
             );
-            txcounter += 1;
-            return #Ok(txcounter - 1);
         } else {
             // This is a normal transfer
             if (args.fee != null and args.fee != ?fee) {  return #Err(#BadFee({expected_fee = fee})); };
@@ -659,9 +654,68 @@ shared(msg) actor class Token(
                     ("fee", #U64(u64(fee)))
                 ]
             );
-            txcounter += 1;
-            return #Ok(txcounter - 1);
-        }
+        };
+        txcounter += 1;
+        duplicates := logTransaction(txcounter, record, duplicates);
+        return #Ok(txcounter - 1);
+    };
+
+    func dedupeTransaction(args: Types.Transaction) : Result.Result<(), ICRC1TransferError> {
+        switch (args.created_at_time) {
+            case (null) {};
+            case (?t) {
+                let ledger_time = Nat64.fromNat(Int.abs(Time.now()));
+                if (t < ledger_time - Nat64.fromNat(Int.abs(- TX_WINDOW - PERMITTED_DRIFT))) {
+                    return #err(#TooOld);
+                };
+                if (t > ledger_time + Nat64.fromNat(Int.abs(PERMITTED_DRIFT))) {
+                    return #err(#CreatedInFuture({ledger_time = ledger_time}));
+                };
+                switch (findTransaction(args, duplicates)) {
+                    case (null) {};
+                    case (?duplicate_of) {
+                        return #err(#Duplicate({duplicate_of}));
+                    };
+                };
+            };
+        };
+        #ok(())
+    };
+
+    func findTransaction(args: Types.Transaction, log: TxLog): ?TxIndex {
+        var index = 0;
+        for (tx in log.vals()) {
+            if (args == tx.args) {
+                return ?index;
+            };
+            index += 1;
+        };
+        null
+    };
+
+    // pruneTransactionLog removes transactions which have drifted outside the
+    // sliding window of retained transactions.
+    func pruneTransactionLog(log: TxLog): TxLog {
+        let cutoff = Nat64.fromNat(Int.abs(Time.now() - TX_WINDOW - PERMITTED_DRIFT));
+        let newLog = Buffer.Buffer<TxLogEntry>(log.size());
+        for (entry in log.vals()) {
+            switch (entry.args.created_at_time) {
+                case (null) { };
+                case (?t) {
+                    if (t > cutoff) {
+                        newLog.add(entry);
+                    }
+                };
+            };
+        };
+        newLog
+    };
+
+    func logTransaction(index: TxIndex, args: Types.Transaction, log: TxLog): TxLog {
+        // Only prune the transaction log when logging a successful transaction, because at this point the user has paid the fee.
+        let newLog = pruneTransactionLog(log);
+        newLog.add({index; args});
+        newLog
     };
 
     public type ICRC1Standard = {
@@ -698,7 +752,7 @@ shared(msg) actor class Token(
             mintingAccount = mintingAccount;
             balances = Iter.toArray(accountBalances.entries());
             allowances = allowancesTemp.toArray();
-            duplicates = Iter.toArray(duplicates.entries());
+            duplicates = duplicates.toArray();
         });
     };
 
@@ -737,7 +791,10 @@ shared(msg) actor class Token(
                     accountAllowances.put(k, allowed_temp);
                 };
 
-                duplicates := HashMap.fromIter<Text, Nat>(data.duplicates.vals(), 0, Text.equal, Text.hash);
+                duplicates.clear();
+                for (t in data.duplicates.vals()) {
+                    duplicates.add(t);
+                };
 
                 upgradeData := null;
             };
