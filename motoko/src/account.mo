@@ -23,6 +23,13 @@ module {
         subaccount: ?Subaccount;
     };
 
+    public type DecodeError = {
+        // Subaccount length is invalid.
+        #BadLength;
+        // The subaccount encoding is not canonical.
+        #NotCanonical;
+    };
+
     public func fromPrincipal(owner: Principal, subaccount: ?Subaccount): Account {
         {
             owner = owner;
@@ -34,16 +41,18 @@ module {
         Blob.fromArrayMut(Array.init(32, 0 : Nat8))
     };
 
-    public func encode(a: Account) : Text {
+    public func toText(a: Account) : Text {
         switch (a.subaccount) {
             case (null) { Principal.toText(a.owner) };
-            case (?s) {
-                if (s == defaultSubaccount()) {
+            case (?blob) {
+                assert(blob.size() == 32);
+                let shrunk = shrink(blob);
+                if (shrunk.size() == 0) {
                     Principal.toText(a.owner)
                 } else {
-                    let b = Buffer.Buffer<Nat8>(32);
-                    for (x in Principal.toBlob(a.owner).vals()) { b.add(x) };
-                    let shrunk = shrink(s);
+                    let principalBytes = Principal.toBlob(a.owner);
+                    let b = Buffer.Buffer<Nat8>(principalBytes.size() + shrunk.size() + 2);
+                    for (x in principalBytes.vals()) { b.add(x) };
                     for (x in shrunk.vals()) { b.add(x) };
                     b.add(Nat8.fromNat(shrunk.size()));
                     b.add(0x7F);
@@ -72,10 +81,46 @@ module {
         Blob.fromArray(out.toArray())
     };
 
-    public func decode(t: Text) : Result.Result<Account, Error.Error> {
-        // TODO: Implement this
-        assert(false);
-        loop {};
+    public func fromText(t: Text) : Result.Result<Account, DecodeError> {
+        let principal = Principal.fromText(t);
+        let bytes = Blob.toArray(Principal.toBlob(principal));
+
+        if (bytes.size() == 0 or bytes[bytes.size() - 1] != Nat8.fromNat(0x7f)) {
+            return #ok({ owner = principal; subaccount = null });
+        };
+
+        if (bytes.size() == 1) {
+            return #err(#BadLength);
+        };
+
+        let n = Nat8.toNat(bytes[bytes.size() - 2]);
+        if (n == 0) {
+            return #err(#NotCanonical);
+        };
+        if (n > 32 or bytes.size() < n + 2) {
+            return #err(#BadLength);
+        };
+        if (bytes[bytes.size() - n - 2] == Nat8.fromNat(0)) {
+            return #err(#NotCanonical);
+        };
+
+        let zeroCount = 32 - n;
+        let subaccount = Blob.fromArray(Array.tabulate(32, func(i: Nat) : Nat8 {
+            if (i < zeroCount) {
+                Nat8.fromNat(0)
+            } else {
+                bytes[bytes.size() - n - 2 + i - zeroCount]
+            }
+        }));
+
+        let owner = Blob.fromArray(Array.tabulate(bytes.size() - n - 2, func(i: Nat) : Nat8 {
+            bytes[i]
+        }));
+
+        #ok({
+            owner = Principal.fromBlob(owner);
+            subaccount = ?subaccount;
+        })
     };
 
     public func equal(a: Account, b: Account) : Bool {
