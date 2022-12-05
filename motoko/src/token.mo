@@ -322,6 +322,27 @@ shared(msg) actor class Token(
         return #Ok(mints.size());
     };
 
+    public shared(msg) func mintAllAccounts(mints: [(Account.Account, Nat)]): async ICRC1TransferResult {
+        if(msg.caller != owner_) {
+            return #Err(#GenericError({error_code = 0; message = "Unauthorized"}));
+        };
+        for ((to, value) in mints.vals()) {
+            let balance = _balanceOf(to);
+            totalSupply_ += value;
+            accountBalances.put(to, balance + value);
+            ignore addRecord(
+                msg.caller, "mint",
+                [
+                    ("to", #Principal(to.owner)),
+                    ("value", #U64(u64(value))),
+                    ("fee", #U64(u64(0)))
+                ]
+            );
+            txcounter += 1;
+        };
+        return #Ok(mints.size());
+    };
+
     public shared(msg) func burnFor(user: Principal, amount: Nat): async TxReceipt {
         if(msg.caller != owner_ and msg.caller != user) {
             return #Err(#Unauthorized);
