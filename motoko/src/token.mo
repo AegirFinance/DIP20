@@ -52,7 +52,15 @@ shared(msg) actor class Token(
             mintingAccount : ?Account.Account;
             balances : [(Account.Account, Nat)];
             allowances : [(Account.Account, [(Principal, Nat)])];
-            duplicates : [TxLogEntry];
+            duplicates : [(Nat, {
+                caller: Principal;
+                from_subaccount: ?Account.Subaccount;
+                to: Account.Account;
+                amount: Nat;
+                fee: ?Nat;
+                memo: ?Blob;
+                created_at_time: ?Nat64;
+            })];
         };
     };
     private stable var upgradeData: ?UpgradeData = null;
@@ -98,12 +106,18 @@ shared(msg) actor class Token(
     private stable var symbol_ : Text = _symbol;
     private stable var totalSupply_ : Nat = _totalSupply;
     private stable var blackhole : Principal = Principal.fromText("aaaaa-aa");
-    private stable var feeTo : Account.Account = Account.fromPrincipal(owner_, null);
+    // Deprecated: feeTo
+    private stable var feeTo : Principal = owner_;
+    private stable var feeToAccount : Account.Account = Account.fromPrincipal(owner_, null);
     private stable var fee : Nat = _fee;
     private stable var mintingAccount : ?Account.Account = null;
+    // Deprecated: balanceEntries
     private stable var balanceEntries : [(Principal, Nat)] = [];
+    // Deprecated: allowanceEntries
     private stable var allowanceEntries : [(Principal, [(Principal, Nat)])] = [];
+    // Deprecated: balances
     private var balances = HashMap.HashMap<Principal, Nat>(1, Principal.equal, Principal.hash);
+    // Deprecated: allowances
     private var allowances = HashMap.HashMap<Principal, HashMap.HashMap<Principal, Nat>>(1, Principal.equal, Principal.hash);
 
     private var accountBalances = HashMap.HashMap<Account.Account, Nat>(1, Account.equal, Account.hash);
@@ -148,7 +162,7 @@ shared(msg) actor class Token(
 
     private func _chargeFee(from: Account.Account, fee: Nat) {
         if(fee > 0) {
-            _transfer(from, feeTo, fee);
+            _transfer(from, feeToAccount, fee);
         };
     };
 
@@ -453,7 +467,8 @@ shared(msg) actor class Token(
 
     public shared(msg) func setFeeTo(to: Principal) {
         assert(msg.caller == owner_);
-        feeTo := Account.fromPrincipal(to, null);
+        feeTo := to;
+        feeToAccount := Account.fromPrincipal(to, null);
     };
 
     public shared(msg) func setFee(_fee: Nat) {
@@ -492,7 +507,7 @@ shared(msg) actor class Token(
                 fee = fee;
             };
             // TODO: Bit of a backwards-compatibility hack with dip-20
-            feeTo = feeTo.owner;
+            feeTo = feeToAccount.owner;
             historySize = txcounter;
             deployTime = genesis.timestamp;
             holderNumber = accountBalances.size();
@@ -760,6 +775,11 @@ shared(msg) actor class Token(
             allowancesTemp.add((k, Iter.toArray(v.entries())));
         };
 
+        var duplicatesTemp = Buffer.Buffer<(Nat, Types.Transaction)>(duplicates.size());
+        for (t in duplicates.vals()) {
+            duplicatesTemp.add((t.index, t.args));
+        };
+
         upgradeData := ?#v1({
             owner = owner_;
             logo = logo_;
@@ -768,12 +788,12 @@ shared(msg) actor class Token(
             symbol = symbol_;
             totalSupply = totalSupply_;
             blackhole = blackhole;
-            feeTo = feeTo;
+            feeTo = feeToAccount;
             fee = fee;
             mintingAccount = mintingAccount;
             balances = Iter.toArray(accountBalances.entries());
             allowances = allowancesTemp.toArray();
-            duplicates = duplicates.toArray();
+            duplicates = duplicatesTemp.toArray();
         });
     };
 
@@ -800,7 +820,7 @@ shared(msg) actor class Token(
                 symbol_ := data.symbol;
                 totalSupply_ := data.totalSupply;
                 blackhole := data.blackhole;
-                feeTo := data.feeTo;
+                feeToAccount := data.feeTo;
                 fee := data.fee;
                 mintingAccount := data.mintingAccount;
 
@@ -813,8 +833,8 @@ shared(msg) actor class Token(
                 };
 
                 duplicates.clear();
-                for (t in data.duplicates.vals()) {
-                    duplicates.add(t);
+                for ((index, args) in data.duplicates.vals()) {
+                    duplicates.add({index; args});
                 };
 
                 upgradeData := null;
