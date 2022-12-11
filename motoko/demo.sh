@@ -10,9 +10,10 @@ ALICE_HOME=./tmp/alice
 BOB_HOME=./tmp/bob
 DAN_HOME=./tmp/dan
 FEE_HOME=./tmp/fee
+MINT_HOME=./tmp/fee
 HOME=$ALICE_HOME
 
-for dir in $ALICE_HOME $BOB_HOME $DAN_HOME $FEE_HOME; do
+for dir in $ALICE_HOME $BOB_HOME $DAN_HOME $FEE_HOME $MINT_HOME; do
     mkdir -p $dir
 done
 
@@ -37,10 +38,16 @@ FEE_PUBLIC_KEY="principal \"$( \
 )\""
 FEE_ACCOUNT="record {owner=$FEE_PUBLIC_KEY}"
 
+MINT_PUBLIC_KEY="principal \"$( \
+    HOME=$MINT_HOME dfx identity get-principal
+)\""
+MINT_ACCOUNT="record {owner=$MINT_PUBLIC_KEY}"
+
 echo Alice id = $ALICE_PUBLIC_KEY
 echo Bob id = $BOB_PUBLIC_KEY
 echo Dan id = $DAN_PUBLIC_KEY
 echo Fee id = $FEE_PUBLIC_KEY
+echo Mint id = $MINT_PUBLIC_KEY
 
 dfx start --clean --background
 dfx canister create --no-wallet token
@@ -68,6 +75,7 @@ echo
 
 call setFeeTo "'($FEE_PUBLIC_KEY)'"
 call setFee "'(100)'"
+call setMintingAccount "'(opt $MINT_ACCOUNT)'"
 
 echo
 echo == Initial token balances for Alice and Bob, Dan, FeeTo
@@ -93,21 +101,38 @@ echo FeeTo = $( \
 balances
 
 echo
-echo == Transfer 0 tokens from Alice to Bob, should Return false, as value is smaller than fee.
+echo == Mint 0 tokens to Bob, should Return false, as value is smaller than fee.
 echo
 
+HOME=$MINT_HOME
 call icrc1_transfer "'(record {to=$BOB_ACCOUNT; amount=0})'"
 
 echo
-echo == Transfer 0 tokens from Alice to Alice, should Return false, as value is smaller than fee.
+echo == Mint 10 tokens to Bob, should succeed
 echo
 
-call icrc1_transfer "'(record {to=$ALICE_ACCOUNT; amount=0})'"
+HOME=$MINT_HOME
+call icrc1_transfer "'(record {to=$BOB_ACCOUNT; amount=10_000})'"
+
+echo
+echo == Burn 10 tokens from Bob, should succeed
+echo
+
+HOME=$BOB_HOME
+call icrc1_transfer "'(record {to=$MINT_ACCOUNT; amount=10_000})'"
+
+echo
+echo == Burn 10 tokens from Bob, should fail with insufficient funds
+echo
+
+HOME=$BOB_HOME
+call icrc1_transfer "'(record {to=$MINT_ACCOUNT; amount=10_000})'"
 
 echo
 echo == Transfer 0.1 tokens from Alice to Bob, should success, revieve 0, as value = fee.
 echo
 
+HOME=$ALICE_HOME
 call icrc1_transfer "'(record {to=$BOB_ACCOUNT; amount=100})'"
 
 echo
