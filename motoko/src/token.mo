@@ -656,9 +656,6 @@ shared(msg) actor class Token(
     public shared(msg) func icrc1_transfer(args: ICRC1TransferArgs) : async ICRC1TransferResult {
         let fromAccount = Account.fromPrincipal(msg.caller, args.from_subaccount);
         let toAccount = args.to;
-        if (fromAccount == toAccount) {
-            return #Err(#GenericError({ error_code = 1; message = "Cannot transfer to same account"; }));
-        };
         let record: Types.Transaction = {
             caller = msg.caller;
             from_subaccount = args.from_subaccount;
@@ -672,20 +669,7 @@ shared(msg) actor class Token(
             case (#ok) {};
             case (#err(e)) { return #Err(e) };
         };
-        if (?fromAccount == mintingAccount) {
-            // This is a mint
-            let to_balance = _balanceOf(toAccount);
-            totalSupply_ += args.amount;
-            accountBalances.put(toAccount, to_balance + args.amount);
-            ignore addRecord(
-                msg.caller, "mint",
-                [
-                    ("to", #Principal(toAccount.owner)),
-                    ("value", #U64(u64(args.amount))),
-                    ("fee", #U64(u64(0)))
-                ]
-            );
-        } else if (?toAccount == mintingAccount) {
+        if (?toAccount == mintingAccount) {
             // This is a burn
             let balance = _balanceOf(fromAccount);
             if(balance < args.amount) {
@@ -697,6 +681,19 @@ shared(msg) actor class Token(
                 msg.caller, "burn",
                 [
                     ("from", #Principal(msg.caller)),
+                    ("value", #U64(u64(args.amount))),
+                    ("fee", #U64(u64(0)))
+                ]
+            );
+        } else if (?fromAccount == mintingAccount) {
+            // This is a mint
+            let to_balance = _balanceOf(toAccount);
+            totalSupply_ += args.amount;
+            accountBalances.put(toAccount, to_balance + args.amount);
+            ignore addRecord(
+                msg.caller, "mint",
+                [
+                    ("to", #Principal(toAccount.owner)),
                     ("value", #U64(u64(args.amount))),
                     ("fee", #U64(u64(0)))
                 ]
