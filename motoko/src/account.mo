@@ -11,6 +11,7 @@ import Blob "mo:base/Blob";
 import Buffer "mo:base/Buffer";
 import Error "mo:base/Error";
 import Nat8 "mo:base/Nat8";
+import Option "mo:base/Option";
 import P "mo:base/Prelude";
 import Principal "mo:base/Principal";
 import Result "mo:base/Result";
@@ -127,11 +128,11 @@ module {
         if (not Principal.equal(a.owner, b.owner)) {
             return false;
         };
-        switch (a.subaccount, b.subaccount) {
-            case (?a_sub, ?b_sub) { Blob.equal(a_sub, b_sub) };
-            case (null, null) { true };
-            case (_, _) { false };
-        }
+        let default = defaultSubaccount();
+        Blob.equal(
+            Option.get(a.subaccount, default),
+            Option.get(b.subaccount, default)
+        )
     };
 
     public func hash(a: Account) : Nat32 {
