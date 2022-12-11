@@ -515,7 +515,33 @@ shared(msg) actor class Token(
         }
     };
 
-    public query func getHolders(start: Nat, limit: Nat) : async [(Account.Account, Nat)] {
+    public query func getHolders(start: Nat, limit: Nat) : async [(Principal, Nat)] {
+        let temp =  Iter.toArray(accountBalances.entries());
+        func onlyPrincipals ((account, balance): (Account.Account, Nat)) : ?(Principal, Nat) {
+            if (Account.equal(account, {owner=account.owner; subaccount=null})) {
+                ?(account.owner, balance)
+            } else {
+                null
+            }
+        };
+        let filtered = Array.mapFilter(temp, onlyPrincipals);
+        func order (a: (Principal, Nat), b: (Principal, Nat)) : Order.Order {
+            return Nat.compare(b.1, a.1);
+        };
+        let sorted = Array.sort(filtered, order);
+        let limit_: Nat = if(start + limit > temp.size()) {
+            temp.size() - start
+        } else {
+            limit
+        };
+        let res = Array.init<(Principal, Nat)>(limit_, (owner_, 0));
+        for (i in Iter.range(0, limit_ - 1)) {
+            res[i] := sorted[i+start];
+        };
+        return Array.freeze(res);
+    };
+
+    public query func getHolderAccounts(start: Nat, limit: Nat) : async [(Account.Account, Nat)] {
         let temp =  Iter.toArray(accountBalances.entries());
         func order (a: (Account.Account, Nat), b: (Account.Account, Nat)) : Order.Order {
             return Nat.compare(b.1, a.1);
