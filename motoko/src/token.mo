@@ -6,25 +6,25 @@
  * Stability  : Experimental
  */
 
+import Array "mo:base/Array";
 import Buffer "mo:base/Buffer";
+import ExperimentalCycles "mo:base/ExperimentalCycles";
 import HashMap "mo:base/HashMap";
-import Principal "mo:base/Principal";
-import Account "./account";
-import Types "./types";
-import Time "mo:base/Time";
 import Int "mo:base/Int";
 import Iter "mo:base/Iter";
-import Array "mo:base/Array";
-import Option "mo:base/Option";
-import Order "mo:base/Order";
-import Nat "mo:base/Nat";
 import Nat64 "mo:base/Nat64";
 import Nat8 "mo:base/Nat8";
+import Nat "mo:base/Nat";
+import Option "mo:base/Option";
+import Order "mo:base/Order";
+import Principal "mo:base/Principal";
 import Result "mo:base/Result";
 import Text "mo:base/Text";
-import ExperimentalCycles "mo:base/ExperimentalCycles";
+import Time "mo:base/Time";
+import Account "./account";
 import Cap "./cap/Cap";
 import Root "./cap/Root";
+import Types "./types";
 
 shared(msg) actor class Token(
     _logo: Text,
