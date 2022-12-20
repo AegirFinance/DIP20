@@ -824,10 +824,23 @@ shared(msg) actor class Token(
         switch (upgradeData) {
             case (null) {
                 // Initial upgrade to this version, convert from previous stable storage
+                // Convert balances to account balances
+                accountBalances := HashMap.HashMap<Account.Account, Nat>(
+                    balanceEntries.size(),
+                    Account.equal,
+                    Account.hash
+                );
                 for ((k, v) in balanceEntries.vals()) {
                     accountBalances.put(Account.fromPrincipal(k, null), v);
                 };
                 balanceEntries := [];
+
+                // Convert allowances to account allowances
+                accountAllowances := HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Nat>>(
+                    allowanceEntries.size(),
+                    Account.equal,
+                    Account.hash
+                );
                 for ((k, v) in allowanceEntries.vals()) {
                     let allowed_temp = HashMap.fromIter<Principal, Nat>(v.vals(), 1, Principal.equal, Principal.hash);
                     accountAllowances.put(Account.fromPrincipal(k, null), allowed_temp);
