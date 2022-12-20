@@ -108,7 +108,7 @@ module {
         let zeroCount = 32 - n;
         let subaccount = Blob.fromArray(Array.tabulate(32, func(i: Nat) : Nat8 {
             if (i < zeroCount) {
-                Nat8.fromNat(0)
+                0
             } else {
                 bytes[bytes.size() - n - 2 + i - zeroCount]
             }
