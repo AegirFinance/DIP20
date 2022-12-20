@@ -52,15 +52,18 @@ shared(msg) actor class Token(
             mintingAccount : ?Account.Account;
             balances : [(Account.Account, Nat)];
             allowances : [(Account.Account, [(Principal, Nat)])];
-            duplicates : [(Nat, {
-                caller: Principal;
-                from_subaccount: ?Account.Subaccount;
-                to: Account.Account;
-                amount: Nat;
-                fee: ?Nat;
-                memo: ?Blob;
-                created_at_time: ?Nat64;
-            })];
+            duplicates : [{
+                index : TxIndex;
+                args : {
+                    caller: Principal;
+                    from_subaccount: ?Account.Subaccount;
+                    to: Account.Account;
+                    amount: Nat;
+                    fee: ?Nat;
+                    memo: ?Blob;
+                    created_at_time: ?Nat64;
+                };
+            }];
         };
     };
     private stable var upgradeData: ?UpgradeData = null;
@@ -161,7 +164,7 @@ shared(msg) actor class Token(
     };
 
     private func _chargeFee(from: Account.Account, fee: Nat) {
-        if(fee > 0) {
+        if (fee > 0) {
             _transfer(from, feeToAccount, fee);
         };
     };
@@ -169,30 +172,31 @@ shared(msg) actor class Token(
     private func _transfer(from: Account.Account, to: Account.Account, value: Nat) {
         let from_balance = _balanceOf(from);
         let from_balance_new : Nat = from_balance - value;
-        if (from_balance_new != 0) { accountBalances.put(from, from_balance_new); }
-        else { accountBalances.delete(from); };
+        if (from_balance_new != 0) {
+            accountBalances.put(from, from_balance_new);
+        } else {
+            accountBalances.delete(from);
+        };
 
         let to_balance = _balanceOf(to);
         let to_balance_new : Nat = to_balance + value;
-        if (to_balance_new != 0) { accountBalances.put(to, to_balance_new); };
+        if (to_balance_new != 0) {
+            accountBalances.put(to, to_balance_new);
+        } else {
+            accountBalances.delete(to);
+        };
     };
 
     private func _balanceOf(who: Account.Account) : Nat {
-        switch (accountBalances.get(who)) {
-            case (?balance) { return balance; };
-            case (_) { return 0; };
-        }
+        Option.get(accountBalances.get(who), 0)
     };
 
     private func _allowance(owner: Account.Account, spender: Principal) : Nat {
         switch (accountAllowances.get(owner)) {
             case (?allowance_owner) {
-                switch(allowance_owner.get(spender)) {
-                    case (?allowance) { return allowance; };
-                    case (_) { return 0; };
-                }
+                Option.get(allowance_owner.get(spender), 0)
             };
-            case (_) { return 0; };
+            case (_) { 0 };
         }
     };
 
@@ -240,12 +244,13 @@ shared(msg) actor class Token(
             let allowance_from = Types.unwrap(accountAllowances.get(fromAccount));
             allowance_from.put(msg.caller, allowed_new);
             accountAllowances.put(fromAccount, allowance_from);
-        } else {
-            if (allowed != 0) {
-                let allowance_from = Types.unwrap(accountAllowances.get(fromAccount));
-                allowance_from.delete(msg.caller);
-                if (allowance_from.size() == 0) { accountAllowances.delete(fromAccount); }
-                else { accountAllowances.put(fromAccount, allowance_from); };
+        } else if (allowed != 0) {
+            let allowance_from = Types.unwrap(accountAllowances.get(fromAccount));
+            allowance_from.delete(msg.caller);
+            if (allowance_from.size() == 0) {
+                accountAllowances.delete(fromAccount);
+            } else {
+                accountAllowances.put(fromAccount, allowance_from);
             };
         };
         ignore addRecord(
@@ -265,19 +270,27 @@ shared(msg) actor class Token(
     /// If this function is called again it overwrites the current allowance with value.
     public shared(msg) func approve(spender: Principal, value: Nat) : async TxReceipt {
         let fromAccount = Account.fromPrincipal(msg.caller, null);
-        if(_balanceOf(fromAccount) < fee) { return #Err(#InsufficientBalance); };
+        if (_balanceOf(fromAccount) < fee) {
+            return #Err(#InsufficientBalance);
+        };
         _chargeFee(fromAccount, fee);
         let v = value + fee;
         if (value == 0 and Option.isSome(accountAllowances.get(fromAccount))) {
+            // Clearing the approval
             let allowance_caller = Types.unwrap(accountAllowances.get(fromAccount));
             allowance_caller.delete(spender);
-            if (allowance_caller.size() == 0) { accountAllowances.delete(fromAccount); }
-            else { accountAllowances.put(fromAccount, allowance_caller); };
+            if (allowance_caller.size() == 0) {
+                accountAllowances.delete(fromAccount);
+            } else {
+                accountAllowances.put(fromAccount, allowance_caller);
+            };
         } else if (value != 0 and Option.isNull(accountAllowances.get(fromAccount))) {
+            // Adding a new approval
             var temp = HashMap.HashMap<Principal, Nat>(1, Principal.equal, Principal.hash);
             temp.put(spender, v);
             accountAllowances.put(fromAccount, temp);
         } else if (value != 0 and Option.isSome(accountAllowances.get(fromAccount))) {
+            // Updating the approval
             let allowance_caller = Types.unwrap(accountAllowances.get(fromAccount));
             allowance_caller.put(spender, v);
             accountAllowances.put(fromAccount, allowance_caller);
@@ -295,7 +308,7 @@ shared(msg) actor class Token(
     };
 
     public shared(msg) func mint(to: Principal, value: Nat): async TxReceipt {
-        if(msg.caller != owner_) {
+        if (msg.caller != owner_) {
             return #Err(#Unauthorized);
         };
         let toAccount = Account.fromPrincipal(to, null);
@@ -315,7 +328,7 @@ shared(msg) actor class Token(
     };
 
     public shared(msg) func mintAll(mints: [(Principal, Nat)]): async TxReceipt {
-        if(msg.caller != owner_) {
+        if (msg.caller != owner_) {
             return #Err(#Unauthorized);
         };
         for ((to, value) in mints.vals()) {
@@ -337,7 +350,7 @@ shared(msg) actor class Token(
     };
 
     public shared(msg) func mintAllAccounts(mints: [(Account.Account, Nat)]): async ICRC1TransferResult {
-        if(msg.caller != owner_) {
+        if (msg.caller != owner_) {
             return #Err(#GenericError({error_code = 0; message = "Unauthorized"}));
         };
         for ((to, value) in mints.vals()) {
@@ -358,12 +371,12 @@ shared(msg) actor class Token(
     };
 
     public shared(msg) func burnFor(user: Principal, amount: Nat): async TxReceipt {
-        if(msg.caller != owner_ and msg.caller != user) {
+        if (msg.caller != owner_ and msg.caller != user) {
             return #Err(#Unauthorized);
         };
         let fromAccount = Account.fromPrincipal(user, null);
         let from_balance = _balanceOf(fromAccount);
-        if(from_balance < amount) {
+        if (from_balance < amount) {
             return #Err(#InsufficientBalance);
         };
         totalSupply_ -= amount;
@@ -383,7 +396,7 @@ shared(msg) actor class Token(
     public shared(msg) func burn(amount: Nat): async TxReceipt {
         let fromAccount = Account.fromPrincipal(msg.caller, null);
         let from_balance = _balanceOf(fromAccount);
-        if(from_balance < amount) {
+        if (from_balance < amount) {
             return #Err(#InsufficientBalance);
         };
         totalSupply_ -= amount;
@@ -529,7 +542,7 @@ shared(msg) actor class Token(
             return Nat.compare(b.1, a.1);
         };
         let sorted = Array.sort(filtered, order);
-        let limit_: Nat = if(start + limit > temp.size()) {
+        let limit_: Nat = if (start + limit > temp.size()) {
             temp.size() - start
         } else {
             limit
@@ -547,7 +560,7 @@ shared(msg) actor class Token(
             return Nat.compare(b.1, a.1);
         };
         let sorted = Array.sort(temp, order);
-        let limit_: Nat = if(start + limit > temp.size()) {
+        let limit_: Nat = if (start + limit > temp.size()) {
             temp.size() - start
         } else {
             limit
@@ -671,48 +684,70 @@ shared(msg) actor class Token(
         };
         if (?toAccount == mintingAccount) {
             // This is a burn
+            // No fee for burns
+            if (args.fee != null and args.fee != ?0) {
+                return #Err(#BadFee({expected_fee = fee}));
+            };
+            // Check the balance
             let balance = _balanceOf(fromAccount);
-            if(balance < args.amount) {
+            if (balance < args.amount) {
                 return #Err(#InsufficientFunds({balance = balance}));
             };
             totalSupply_ -= args.amount;
             accountBalances.put(fromAccount, balance - args.amount);
-            ignore addRecord(
-                msg.caller, "burn",
-                [
-                    ("from", #Principal(msg.caller)),
-                    ("value", #U64(u64(args.amount))),
-                    ("fee", #U64(u64(0)))
-                ]
-            );
+            if (Account.equal(fromAccount, {owner = fromAccount.owner; subaccount = null})) {
+                // For the default subaccount. Record it, like a DIP-20 txn
+                ignore addRecord(
+                    msg.caller, "burn",
+                    [
+                        ("from", #Principal(msg.caller)),
+                        ("value", #U64(u64(args.amount))),
+                        ("fee", #U64(u64(0)))
+                    ]
+                );
+            };
         } else if (?fromAccount == mintingAccount) {
             // This is a mint
+            // No fee for mints
+            if (args.fee != null and args.fee != ?0) {
+                return #Err(#BadFee({expected_fee = fee}));
+            };
             let to_balance = _balanceOf(toAccount);
             totalSupply_ += args.amount;
             accountBalances.put(toAccount, to_balance + args.amount);
-            ignore addRecord(
-                msg.caller, "mint",
-                [
-                    ("to", #Principal(toAccount.owner)),
-                    ("value", #U64(u64(args.amount))),
-                    ("fee", #U64(u64(0)))
-                ]
-            );
+            if (Account.equal(toAccount, {owner = toAccount.owner; subaccount = null})) {
+                // For the default subaccount. Record it, like a DIP-20 txn
+                ignore addRecord(
+                    msg.caller, "mint",
+                    [
+                        ("to", #Principal(toAccount.owner)),
+                        ("value", #U64(u64(args.amount))),
+                        ("fee", #U64(u64(0)))
+                    ]
+                );
+            };
         } else {
             // This is a normal transfer
-            if (args.fee != null and args.fee != ?fee) {  return #Err(#BadFee({expected_fee = fee})); };
+            if (args.fee != null and args.fee != ?fee) {
+                return #Err(#BadFee({expected_fee = fee}));
+            };
             let balance = _balanceOf(fromAccount);
-            if (balance < args.amount + fee) { return #Err(#InsufficientFunds({balance = balance})); };
+            if (balance < args.amount + fee) {
+                return #Err(#InsufficientFunds({balance = balance}));
+            };
             _chargeFee(fromAccount, fee);
             _transfer(fromAccount, args.to, args.amount);
-            ignore addRecord(
-                msg.caller, "transfer",
-                [
-                    ("to", #Principal(args.to.owner)),
-                    ("value", #U64(u64(args.amount))),
-                    ("fee", #U64(u64(fee)))
-                ]
-            );
+            if (Account.equal(args.to, {owner = args.to.owner; subaccount = null})) {
+                // For the default subaccount. Record it, like a DIP-20 txn
+                ignore addRecord(
+                    msg.caller, "transfer",
+                    [
+                        ("to", #Principal(args.to.owner)),
+                        ("value", #U64(u64(args.amount))),
+                        ("fee", #U64(u64(fee)))
+                    ]
+                );
+            };
         };
         txcounter += 1;
         duplicates := logTransaction(txcounter, record, duplicates);
@@ -724,10 +759,10 @@ shared(msg) actor class Token(
             case (null) {};
             case (?t) {
                 let ledger_time = Nat64.fromNat(Int.abs(Time.now()));
-                if (t < ledger_time - Nat64.fromNat(Int.abs(- TX_WINDOW - PERMITTED_DRIFT))) {
+                if (t < ledger_time - Nat64.fromNat(Int.abs(TX_WINDOW + PERMITTED_DRIFT))) {
                     return #err(#TooOld);
                 };
-                if (t > ledger_time + Nat64.fromNat(Int.abs(PERMITTED_DRIFT))) {
+                if (ledger_time + Nat64.fromNat(Int.abs(PERMITTED_DRIFT)) < t) {
                     return #err(#CreatedInFuture({ledger_time = ledger_time}));
                 };
                 switch (findTransaction(args, duplicates)) {
@@ -742,12 +777,10 @@ shared(msg) actor class Token(
     };
 
     func findTransaction(args: Types.Transaction, log: TxLog): ?TxIndex {
-        var index = 0;
         for (tx in log.vals()) {
             if (args == tx.args) {
-                return ?index;
+                return ?tx.index;
             };
-            index += 1;
         };
         null
     };
@@ -758,13 +791,9 @@ shared(msg) actor class Token(
         let cutoff = Nat64.fromNat(Int.abs(Time.now() - TX_WINDOW - PERMITTED_DRIFT));
         let newLog = Buffer.Buffer<TxLogEntry>(log.size());
         for (entry in log.vals()) {
-            switch (entry.args.created_at_time) {
-                case (null) { };
-                case (?t) {
-                    if (t > cutoff) {
-                        newLog.add(entry);
-                    }
-                };
+            // Preserve all the entries after the cutoff
+            if (cutoff < Option.get(entry.args.created_at_time, 0: Nat64)) {
+                newLog.add(entry);
             };
         };
         newLog
@@ -798,11 +827,6 @@ shared(msg) actor class Token(
             allowancesTemp.add((k, Iter.toArray(v.entries())));
         };
 
-        var duplicatesTemp = Buffer.Buffer<(Nat, Types.Transaction)>(duplicates.size());
-        for (t in duplicates.vals()) {
-            duplicatesTemp.add((t.index, t.args));
-        };
-
         upgradeData := ?#v1({
             owner = owner_;
             logo = logo_;
@@ -816,14 +840,16 @@ shared(msg) actor class Token(
             mintingAccount = mintingAccount;
             balances = Iter.toArray(accountBalances.entries());
             allowances = allowancesTemp.toArray();
-            duplicates = duplicatesTemp.toArray();
+            duplicates = duplicates.toArray();
         });
     };
 
     system func postupgrade() {
         switch (upgradeData) {
             case (null) {
-                // Initial upgrade to this version, convert from previous stable storage
+                // Initial upgrade to this version, convert from previous
+                // DIP-20 stable storage
+
                 // Convert balances to account balances
                 accountBalances := HashMap.HashMap<Account.Account, Nat>(
                     balanceEntries.size(),
@@ -860,17 +886,33 @@ shared(msg) actor class Token(
                 fee := data.fee;
                 mintingAccount := data.mintingAccount;
 
-                accountBalances := HashMap.fromIter<Account.Account, Nat>(data.balances.vals(), 1, Account.equal, Account.hash);
+                accountBalances := HashMap.fromIter<Account.Account, Nat>(
+                    data.balances.vals(),
+                    1,
+                    Account.equal,
+                    Account.hash
+                );
 
-                accountAllowances := HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Nat>>(data.allowances.size(), Account.equal, Account.hash);
+                accountAllowances := HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Nat>>(
+                    data.allowances.size(),
+                    Account.equal,
+                    Account.hash
+                );
                 for ((k, v) in data.allowances.vals()) {
-                    let allowed_temp = HashMap.fromIter<Principal, Nat>(v.vals(), 1, Principal.equal, Principal.hash);
-                    accountAllowances.put(k, allowed_temp);
+                    accountAllowances.put(
+                        k,
+                        HashMap.fromIter<Principal, Nat>(
+                            v.vals(),
+                            1,
+                            Principal.equal,
+                            Principal.hash
+                        )
+                    );
                 };
 
                 duplicates.clear();
-                for ((index, args) in data.duplicates.vals()) {
-                    duplicates.add({index; args});
+                for (tx in data.duplicates.vals()) {
+                    duplicates.add(tx);
                 };
 
                 upgradeData := null;
