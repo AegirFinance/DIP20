@@ -60,7 +60,7 @@ module {
                     Principal.toText(
                         Principal.fromBlob(
                             Blob.fromArray(
-                                b.toArray()
+                                Buffer.toArray(b)
                             )
                         )
                     )
@@ -79,7 +79,7 @@ module {
                 out.add(x);
             }
         };
-        Blob.fromArray(out.toArray())
+        Blob.fromArray(Buffer.toArray(out))
     };
 
     public func fromText(t: Text) : Result.Result<Account, DecodeError> {

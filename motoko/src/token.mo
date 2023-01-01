@@ -11,6 +11,7 @@ import Buffer "mo:base/Buffer";
 import ExperimentalCycles "mo:base/ExperimentalCycles";
 import HashMap "mo:base/HashMap";
 import Int "mo:base/Int";
+import Int64 "mo:base/Int64";
 import Iter "mo:base/Iter";
 import Nat64 "mo:base/Nat64";
 import Nat8 "mo:base/Nat8";
@@ -51,7 +52,7 @@ shared(msg) actor class Token(
             fee : Nat;
             mintingAccount : ?Account.Account;
             balances : [(Account.Account, Nat)];
-            allowances : [(Account.Account, [(Principal, Nat)])];
+            allowances : [(Account.Account, [(Principal, Allowance)])];
             duplicates : [{
                 index : TxIndex;
                 args : {
@@ -101,6 +102,10 @@ shared(msg) actor class Token(
             #AmountTooSmall;
         };
     };
+    public type Allowance = {
+        allowance: Nat;
+        expires_at: ?Nat64;
+    };
 
     private stable var owner_ : Principal = _owner;
     private stable var logo_ : Text = _logo;
@@ -124,7 +129,7 @@ shared(msg) actor class Token(
     private var allowances = HashMap.HashMap<Principal, HashMap.HashMap<Principal, Nat>>(1, Principal.equal, Principal.hash);
 
     private var accountBalances = HashMap.HashMap<Account.Account, Nat>(1, Account.equal, Account.hash);
-    private var accountAllowances = HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Nat>>(1, Account.equal, Account.hash);
+    private var accountAllowances = HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Allowance>>(1, Account.equal, Account.hash);
     private var duplicates = Buffer.Buffer<TxLogEntry>(1024);
 
     balances.put(owner_, totalSupply_);
@@ -191,18 +196,33 @@ shared(msg) actor class Token(
         Option.get(accountBalances.get(who), 0)
     };
 
-    private func _allowance(owner: Account.Account, spender: Principal) : Nat {
-        switch (accountAllowances.get(owner)) {
-            case (?allowance_owner) {
-                Option.get(allowance_owner.get(spender), 0)
+    private func _allowance(owner: Account.Account, spender: Principal) : Allowance {
+        let existing = Option.get(
+            Option.chain<HashMap.HashMap<Principal, Allowance>, Allowance>(
+                accountAllowances.get(owner),
+                func (a) { a.get(spender) }
+            ),
+            {allowance = 0; expires_at = null}
+        );
+        switch (existing.expires_at) {
+            case (?exp) {
+                if (exp < Nat64.fromNat(Int.abs(Time.now() - PERMITTED_DRIFT))) {
+                    return {allowance = 0; expires_at = null};
+                };
             };
-            case (_) { 0 };
-        }
+            case (null) { };
+        };
+        existing
     };
 
     private func u64(i: Nat): Nat64 {
         Nat64.fromNat(i)
     };
+
+    private func i64(i: Int): Int64 {
+        Int64.fromInt(i)
+    };
+
 
     /*
     *   Core interfaces:
@@ -235,16 +255,19 @@ shared(msg) actor class Token(
     public shared(msg) func transferFrom(from: Principal, to: Principal, value: Nat) : async TxReceipt {
         let fromAccount = Account.fromPrincipal(from, null);
         if (_balanceOf(fromAccount) < value + fee) { return #Err(#InsufficientBalance); };
-        let allowed : Nat = _allowance(fromAccount, msg.caller);
-        if (allowed < value + fee) { return #Err(#InsufficientAllowance); };
+        let allowed = _allowance(fromAccount, msg.caller);
+        if (allowed.allowance < value + fee) { return #Err(#InsufficientAllowance); };
         _chargeFee(fromAccount, fee);
         _transfer(fromAccount, Account.fromPrincipal(to, null), value);
-        let allowed_new : Nat = allowed - value - fee;
-        if (allowed_new != 0) {
+        let allowed_new : Allowance = {
+            allowance = allowed.allowance - value - fee;
+            expires_at = allowed.expires_at;
+        };
+        if (allowed_new.allowance != 0) {
             let allowance_from = Types.unwrap(accountAllowances.get(fromAccount));
             allowance_from.put(msg.caller, allowed_new);
             accountAllowances.put(fromAccount, allowance_from);
-        } else if (allowed != 0) {
+        } else if (allowed.allowance != 0) {
             let allowance_from = Types.unwrap(accountAllowances.get(fromAccount));
             allowance_from.delete(msg.caller);
             if (allowance_from.size() == 0) {
@@ -274,7 +297,7 @@ shared(msg) actor class Token(
             return #Err(#InsufficientBalance);
         };
         _chargeFee(fromAccount, fee);
-        let v = value + fee;
+        let v: Allowance = { allowance = value + fee; expires_at = null };
         if (value == 0 and Option.isSome(accountAllowances.get(fromAccount))) {
             // Clearing the approval
             let allowance_caller = Types.unwrap(accountAllowances.get(fromAccount));
@@ -286,7 +309,7 @@ shared(msg) actor class Token(
             };
         } else if (value != 0 and Option.isNull(accountAllowances.get(fromAccount))) {
             // Adding a new approval
-            var temp = HashMap.HashMap<Principal, Nat>(1, Principal.equal, Principal.hash);
+            var temp = HashMap.HashMap<Principal, Allowance>(1, Principal.equal, Principal.hash);
             temp.put(spender, v);
             accountAllowances.put(fromAccount, temp);
         } else if (value != 0 and Option.isSome(accountAllowances.get(fromAccount))) {
@@ -300,6 +323,93 @@ shared(msg) actor class Token(
             [
                 ("to", #Principal(spender)),
                 ("value", #U64(u64(value))),
+                ("fee", #U64(u64(fee)))
+            ]
+        );
+        txcounter += 1;
+        return #Ok(txcounter - 1);
+    };
+
+    public type ICRC2ApproveArgs = {
+        from_subaccount: ?Blob;
+        spender: Principal;
+        amount: Int;
+        expires_at: ?Nat64;
+        fee: ?Nat;
+        memo: ?Blob;
+        created_at_time: ?Nat64;
+    };
+
+    public type ICRC2ApproveError = {
+        #BadFee: { expected_fee: Nat };
+        // The caller does not have enough funds to pay the approval fee.
+        #InsufficientFunds: { balance: Nat };
+        // The approval request expired before the ledger had a chance to apply it.
+        #Expired: { ledger_time: Nat64; };
+        #TooOld;
+        #CreatedInFuture: { ledger_time: Nat64 };
+        #Duplicate: { duplicate_of: Nat };
+        #TemporarilyUnavailable;
+        #GenericError: { error_code: Nat; message: Text };
+    };
+
+    public type ICRC2ApproveResult = {
+        #Ok: Nat;
+        #Err: ICRC2ApproveError;
+    };
+
+    public shared(msg) func icrc2_approve(args: ICRC2ApproveArgs) : async ICRC2ApproveResult {
+        let fromAccount = Account.fromPrincipal(msg.caller, args.from_subaccount);
+        if (args.fee != null and args.fee != ?fee) {
+            return #Err(#BadFee({expected_fee = fee}));
+        };
+        let balance = _balanceOf(fromAccount);
+        if (balance < fee) {
+            return #Err(#InsufficientFunds({balance = balance}));
+        };
+        let ledger_time = Nat64.fromNat(Int.abs(Time.now()));
+        switch (args.expires_at) {
+            case (?e) {
+                if (e < ledger_time - Nat64.fromNat(Int.abs(PERMITTED_DRIFT))) {
+                    return #Err(#Expired({ ledger_time }));
+                };
+            };
+            case (_) { };
+        };
+        _chargeFee(fromAccount, fee);
+        let existing = _allowance(fromAccount, args.spender);
+        let expires_at = if (Option.isSome(args.expires_at)) {
+            args.expires_at
+        } else {
+            existing.expires_at
+        };
+        let allowance = Int.abs(Int.max(existing.allowance + args.amount, 0));
+        let v: Allowance = { allowance; expires_at };
+        if (allowance == 0 and Option.isSome(accountAllowances.get(fromAccount))) {
+            // Clearing the approval
+            let allowance_caller = Types.unwrap(accountAllowances.get(fromAccount));
+            allowance_caller.delete(args.spender);
+            if (allowance_caller.size() == 0) {
+                accountAllowances.delete(fromAccount);
+            } else {
+                accountAllowances.put(fromAccount, allowance_caller);
+            };
+        } else if (allowance != 0 and Option.isNull(accountAllowances.get(fromAccount))) {
+            // Adding a new approval
+            var temp = HashMap.HashMap<Principal, Allowance>(1, Principal.equal, Principal.hash);
+            temp.put(args.spender, v);
+            accountAllowances.put(fromAccount, temp);
+        } else if (allowance != 0 and Option.isSome(accountAllowances.get(fromAccount))) {
+            // Updating the approval
+            let allowance_caller = Types.unwrap(accountAllowances.get(fromAccount));
+            allowance_caller.put(args.spender, v);
+            accountAllowances.put(fromAccount, allowance_caller);
+        };
+        ignore addRecord(
+            msg.caller, "approve",
+            [
+                ("to", #Principal(args.spender)),
+                ("value", #I64(i64(args.amount))),
                 ("fee", #U64(u64(fee)))
             ]
         );
@@ -442,7 +552,7 @@ shared(msg) actor class Token(
     };
 
     public query func allowance(owner: Principal, spender: Principal) : async Nat {
-        return _allowance(Account.fromPrincipal(owner, null), spender);
+        return _allowance(Account.fromPrincipal(owner, null), spender).allowance;
     };
 
     public query func getMetadata() : async Metadata {
@@ -580,7 +690,7 @@ shared(msg) actor class Token(
         return size;
     };
 
-    public query func getUserApprovals(who : Principal) : async [(Principal, Nat)] {
+    public query func getUserApprovals(who : Principal) : async [(Principal, Allowance)] {
         switch (accountAllowances.get(Account.fromPrincipal(who, null))) {
             case (?allowance_who) {
                 return Iter.toArray(allowance_who.entries());
@@ -823,7 +933,7 @@ shared(msg) actor class Token(
     * upgrade functions
     */
     system func preupgrade() {
-        var allowancesTemp = Buffer.Buffer<(Account.Account, [(Principal, Nat)])>(accountAllowances.size());
+        var allowancesTemp = Buffer.Buffer<(Account.Account, [(Principal, Allowance)])>(accountAllowances.size());
         for ((k, v) in accountAllowances.entries()) {
             allowancesTemp.add((k, Iter.toArray(v.entries())));
         };
@@ -840,8 +950,8 @@ shared(msg) actor class Token(
             fee = fee;
             mintingAccount = mintingAccount;
             balances = Iter.toArray(accountBalances.entries());
-            allowances = allowancesTemp.toArray();
-            duplicates = duplicates.toArray();
+            allowances = Buffer.toArray(allowancesTemp);
+            duplicates = Buffer.toArray(duplicates);
         });
     };
 
@@ -863,13 +973,16 @@ shared(msg) actor class Token(
                 balanceEntries := [];
 
                 // Convert allowances to account allowances
-                accountAllowances := HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Nat>>(
+                accountAllowances := HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Allowance>>(
                     allowanceEntries.size(),
                     Account.equal,
                     Account.hash
                 );
                 for ((k, v) in allowanceEntries.vals()) {
-                    let allowed_temp = HashMap.fromIter<Principal, Nat>(v.vals(), 1, Principal.equal, Principal.hash);
+                    let allowed_temp = HashMap.HashMap<Principal, Allowance>(v.size(), Principal.equal, Principal.hash);
+                    for ((principal, allowance) in v.vals()) {
+                        allowed_temp.put(principal, {allowance = allowance; expires_at = null});
+                    };
                     accountAllowances.put(Account.fromPrincipal(k, null), allowed_temp);
                 };
                 allowanceEntries := [];
@@ -889,12 +1002,12 @@ shared(msg) actor class Token(
 
                 accountBalances := HashMap.fromIter<Account.Account, Nat>(
                     data.balances.vals(),
-                    1,
+                    data.balances.size(),
                     Account.equal,
                     Account.hash
                 );
 
-                accountAllowances := HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Nat>>(
+                accountAllowances := HashMap.HashMap<Account.Account, HashMap.HashMap<Principal, Allowance>>(
                     data.allowances.size(),
                     Account.equal,
                     Account.hash
@@ -902,9 +1015,9 @@ shared(msg) actor class Token(
                 for ((k, v) in data.allowances.vals()) {
                     accountAllowances.put(
                         k,
-                        HashMap.fromIter<Principal, Nat>(
+                        HashMap.fromIter<Principal, Allowance>(
                             v.vals(),
-                            1,
+                            v.size(),
                             Principal.equal,
                             Principal.hash
                         )
