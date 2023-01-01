@@ -360,6 +360,9 @@ shared(msg) actor class Token(
 
     public shared(msg) func icrc2_approve(args: ICRC2ApproveArgs) : async ICRC2ApproveResult {
         let fromAccount = Account.fromPrincipal(msg.caller, args.from_subaccount);
+        if (args.spender == msg.caller) {
+            return #Err(#GenericError({error_code = 1; message = "Caller cannot equal spender"}));
+        };
         if (args.fee != null and args.fee != ?fee) {
             return #Err(#BadFee({expected_fee = fee}));
         };
