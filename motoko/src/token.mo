@@ -57,7 +57,7 @@ shared(msg) actor class Token(
                 index : TxIndex;
                 args : {
                     caller: Principal;
-                    from_subaccount: ?Account.Subaccount;
+                    from: Account.Account;
                     to: Account.Account;
                     amount: Nat;
                     fee: ?Nat;
@@ -192,6 +192,37 @@ shared(msg) actor class Token(
         };
     };
 
+    private func _updateAllowance(from: Account.Account, spender: Principal, amount: Int, new_expiry: ?Nat64): () {
+        let existing = _allowance(from, spender);
+        let expires_at = if (Option.isSome(new_expiry)) {
+            new_expiry
+        } else {
+            existing.expires_at
+        };
+        let allowance = Int.abs(Int.max(existing.allowance + amount, 0));
+        let v: Allowance = { allowance; expires_at };
+        if (allowance == 0 and Option.isSome(accountAllowances.get(from))) {
+            // Clearing the approval
+            let allowance_caller = Types.unwrap(accountAllowances.get(from));
+            allowance_caller.delete(spender);
+            if (allowance_caller.size() == 0) {
+                accountAllowances.delete(from);
+            } else {
+                accountAllowances.put(from, allowance_caller);
+            };
+        } else if (allowance != 0 and Option.isNull(accountAllowances.get(from))) {
+            // Adding a new approval
+            var temp = HashMap.HashMap<Principal, Allowance>(1, Principal.equal, Principal.hash);
+            temp.put(spender, v);
+            accountAllowances.put(from, temp);
+        } else if (allowance != 0 and Option.isSome(accountAllowances.get(from))) {
+            // Updating the approval
+            let allowance_caller = Types.unwrap(accountAllowances.get(from));
+            allowance_caller.put(spender, v);
+            accountAllowances.put(from, allowance_caller);
+        };
+    };
+
     private func _balanceOf(who: Account.Account) : Nat {
         Option.get(accountBalances.get(who), 0)
     };
@@ -289,6 +320,135 @@ shared(msg) actor class Token(
         return #Ok(txcounter - 1);
     };
 
+    public type ICRC2TransferFromArgs = {
+        from: Account.Account;
+        to: Account.Account;
+        amount: Nat;
+        fee: ?Nat;
+        memo: ?Blob;
+        created_at_time: ?Nat64;
+    };
+
+    public type ICRC2TransferFromError = {
+        #BadFee: { expected_fee: Nat };
+        #BadBurn: { min_burn_amount: Nat };
+        // The [from] account does not hold enough funds for the transfer.
+        #InsufficientFunds: { balance: Nat };
+        // The caller exceeded its allowance.
+        #InsufficientAllowance: { allowance: Nat };
+        #TooOld;
+        #CreatedInFuture: { ledger_time: Nat64 };
+        #Duplicate: { duplicate_of: Nat };
+        #TemporarilyUnavailable;
+        #GenericError: { error_code: Nat; message: Text };
+    };
+
+    public type ICRC2TransferFromResult = {
+        #Ok: Nat;
+        #Err: ICRC2TransferFromError;
+    };
+
+    public shared(msg) func icrc2_transfer_from(args: ICRC2TransferFromArgs) : async ICRC2TransferFromResult {
+        let fromAccount = args.from;
+        let toAccount = args.to;
+        let record: Types.Transaction = {
+            caller = msg.caller;
+            from = fromAccount;
+            to = args.to;
+            amount = args.amount;
+            fee = args.fee;
+            memo = args.memo;
+            created_at_time = args.created_at_time;
+        };
+        switch (dedupeTransaction(record)) {
+            case (#ok) {};
+            case (#err(e)) { return #Err(e) };
+        };
+
+        // Check the allowance
+        let allowed = _allowance(fromAccount, msg.caller);
+        var feeApplied = fee;
+
+        if (?toAccount == mintingAccount) {
+            // This is a burn
+            // No fee for burns
+            feeApplied := 0;
+            if (args.fee != null and args.fee != ?0) {
+                return #Err(#BadFee({expected_fee = fee}));
+            };
+            // Check the balance
+            let balance = _balanceOf(fromAccount);
+            if (balance < args.amount) {
+                return #Err(#InsufficientFunds({balance = balance}));
+            };
+            if (allowed.allowance < args.amount) { return #Err(#InsufficientAllowance({allowance = allowed.allowance})); };
+            totalSupply_ -= args.amount;
+            accountBalances.put(fromAccount, balance - args.amount);
+            if (Account.equal(fromAccount, {owner = fromAccount.owner; subaccount = null})) {
+                // For the default subaccount. Record it, like a DIP-20 txn
+                ignore addRecord(
+                    msg.caller, "burn",
+                    [
+                        ("from", #Principal(fromAccount.owner)),
+                        ("value", #U64(u64(args.amount))),
+                        ("fee", #U64(u64(0)))
+                    ]
+                );
+            };
+        } else if (?fromAccount == mintingAccount) {
+            // This is a mint
+            // No fee for mints
+            feeApplied := 0;
+            if (args.fee != null and args.fee != ?0) {
+                return #Err(#BadFee({expected_fee = fee}));
+            };
+            if (allowed.allowance < args.amount) { return #Err(#InsufficientAllowance({allowance = allowed.allowance})); };
+            let to_balance = _balanceOf(toAccount);
+            totalSupply_ += args.amount;
+            accountBalances.put(toAccount, to_balance + args.amount);
+            if (Account.equal(toAccount, {owner = toAccount.owner; subaccount = null})) {
+                // For the default subaccount. Record it, like a DIP-20 txn
+                ignore addRecord(
+                    msg.caller, "mint",
+                    [
+                        ("to", #Principal(toAccount.owner)),
+                        ("value", #U64(u64(args.amount))),
+                        ("fee", #U64(u64(0)))
+                    ]
+                );
+            };
+        } else {
+            // This is a normal transfer
+            if (args.fee != null and args.fee != ?fee) {
+                return #Err(#BadFee({expected_fee = fee}));
+            };
+            let balance = _balanceOf(fromAccount);
+            if (balance < args.amount + fee) {
+                return #Err(#InsufficientFunds({balance = balance}));
+            };
+            if (allowed.allowance < args.amount) { return #Err(#InsufficientAllowance({allowance = allowed.allowance})); };
+            _chargeFee(fromAccount, fee);
+            _transfer(fromAccount, args.to, args.amount);
+            if (Account.equal(args.to, {owner = args.to.owner; subaccount = null})) {
+                // For the default subaccount. Record it, like a DIP-20 txn
+                ignore addRecord(
+                    msg.caller, "transfer",
+                    [
+                        ("to", #Principal(args.to.owner)),
+                        ("value", #U64(u64(args.amount))),
+                        ("fee", #U64(u64(fee)))
+                    ]
+                );
+            };
+        };
+
+        _updateAllowance(fromAccount, msg.caller, -1 * (args.amount + feeApplied), null);
+
+        txcounter += 1;
+        duplicates := logTransaction(txcounter, record, duplicates);
+        return #Ok(txcounter - 1);
+    };
+
     /// Allows spender to withdraw from your account multiple times, up to the value amount.
     /// If this function is called again it overwrites the current allowance with value.
     public shared(msg) func approve(spender: Principal, value: Nat) : async TxReceipt {
@@ -380,34 +540,7 @@ shared(msg) actor class Token(
             case (_) { };
         };
         _chargeFee(fromAccount, fee);
-        let existing = _allowance(fromAccount, args.spender);
-        let expires_at = if (Option.isSome(args.expires_at)) {
-            args.expires_at
-        } else {
-            existing.expires_at
-        };
-        let allowance = Int.abs(Int.max(existing.allowance + args.amount, 0));
-        let v: Allowance = { allowance; expires_at };
-        if (allowance == 0 and Option.isSome(accountAllowances.get(fromAccount))) {
-            // Clearing the approval
-            let allowance_caller = Types.unwrap(accountAllowances.get(fromAccount));
-            allowance_caller.delete(args.spender);
-            if (allowance_caller.size() == 0) {
-                accountAllowances.delete(fromAccount);
-            } else {
-                accountAllowances.put(fromAccount, allowance_caller);
-            };
-        } else if (allowance != 0 and Option.isNull(accountAllowances.get(fromAccount))) {
-            // Adding a new approval
-            var temp = HashMap.HashMap<Principal, Allowance>(1, Principal.equal, Principal.hash);
-            temp.put(args.spender, v);
-            accountAllowances.put(fromAccount, temp);
-        } else if (allowance != 0 and Option.isSome(accountAllowances.get(fromAccount))) {
-            // Updating the approval
-            let allowance_caller = Types.unwrap(accountAllowances.get(fromAccount));
-            allowance_caller.put(args.spender, v);
-            accountAllowances.put(fromAccount, allowance_caller);
-        };
+        _updateAllowance(fromAccount, msg.caller, args.amount, args.expires_at);
         ignore addRecord(
             msg.caller, "approve",
             [
@@ -793,7 +926,7 @@ shared(msg) actor class Token(
         let toAccount = args.to;
         let record: Types.Transaction = {
             caller = msg.caller;
-            from_subaccount = args.from_subaccount;
+            from = fromAccount;
             to = args.to;
             amount = args.amount;
             fee = args.fee;

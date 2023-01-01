@@ -38,7 +38,7 @@ module {
     };
     public type Transaction = {
         caller: Principal;
-        from_subaccount: ?Account.Subaccount;
+        from: Account.Account;
         to: Account.Account;
         amount: Nat;
         fee: ?Nat;
