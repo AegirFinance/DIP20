@@ -814,6 +814,7 @@ shared(msg) actor class Token(
     public query func icrc1_supported_standards(a: Account.Account) : async [ICRC1Standard] {
         [
             { name = "ICRC-1"; url = "https://github.com/dfinity/ICRC-1" },
+            { name = "ICRC-2"; url = "https://github.com/dfinity/ICRC-2" },
             { name = "DIP-20"; url = "https://github.com/Psychedelic/DIP20" }
         ]
     };
