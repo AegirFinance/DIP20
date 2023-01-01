@@ -555,6 +555,15 @@ shared(msg) actor class Token(
         return _allowance(Account.fromPrincipal(owner, null), spender).allowance;
     };
 
+    public type ICRC2AllowanceArgs = {
+        account: Account.Account;
+        spender: Principal;
+    };
+
+    public query func icrc2_allowance(args: ICRC2AllowanceArgs) : async Allowance {
+        return _allowance(args.account, args.spender);
+    };
+
     public query func getMetadata() : async Metadata {
         return {
             logo = logo_;
