@@ -540,7 +540,7 @@ shared(msg) actor class Token(
             case (_) { };
         };
         _chargeFee(fromAccount, fee);
-        _updateAllowance(fromAccount, msg.caller, args.amount, args.expires_at);
+        _updateAllowance(fromAccount, args.spender, args.amount, args.expires_at);
         ignore addRecord(
             msg.caller, "approve",
             [
