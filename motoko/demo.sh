@@ -108,7 +108,7 @@ echo FeeTo = $( \
 balances
 
 echo
-echo == Mint 0 tokens to Bob, should Return false, as value is smaller than fee.
+echo == Mint 0 tokens to Bob, should succeed
 echo
 
 HOME=$MINT_HOME
