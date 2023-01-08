@@ -437,31 +437,21 @@ shared(msg) actor class Token(
     /// If this function is called again it overwrites the current allowance with value.
     public shared(msg) func approve(spender: Principal, value: Nat) : async TxReceipt {
         let fromAccount = Account.fromPrincipal(msg.caller, null);
+        if (spender == msg.caller) {
+            return #Err(#Other("Caller cannot equal spender"));
+        };
         if (_balanceOf(fromAccount) < fee) {
             return #Err(#InsufficientBalance);
         };
         _chargeFee(fromAccount, fee);
-        let v: Allowance = { allowance = value + fee; expires_at = null };
-        if (value == 0 and Option.isSome(accountAllowances.get(fromAccount))) {
-            // Clearing the approval
-            let allowance_caller = Types.unwrap(accountAllowances.get(fromAccount));
-            allowance_caller.delete(spender);
-            if (allowance_caller.size() == 0) {
-                accountAllowances.delete(fromAccount);
-            } else {
-                accountAllowances.put(fromAccount, allowance_caller);
-            };
-        } else if (value != 0 and Option.isNull(accountAllowances.get(fromAccount))) {
-            // Adding a new approval
-            var temp = HashMap.HashMap<Principal, Allowance>(1, Principal.equal, Principal.hash);
-            temp.put(spender, v);
-            accountAllowances.put(fromAccount, temp);
-        } else if (value != 0 and Option.isSome(accountAllowances.get(fromAccount))) {
-            // Updating the approval
-            let allowance_caller = Types.unwrap(accountAllowances.get(fromAccount));
-            allowance_caller.put(spender, v);
-            accountAllowances.put(fromAccount, allowance_caller);
+
+        // dip-20 approve resets the allowed amount, not incr/decrements. So
+        // clear any allowance first. This will incidentally clear the expiry.
+        let existing = _allowance(fromAccount, spender);
+        if (existing.allowance > 0) {
+            _updateAllowance(fromAccount, spender, -1 * existing.allowance, null);
         };
+        _updateAllowance(fromAccount, spender, value, null);
         ignore addRecord(
             msg.caller, "approve",
             [
