@@ -2,9 +2,16 @@
 
 # set -e
 
+function cleanup() {
+    dfx stop
+}
+
+trap cleanup EXIT
+
 # clear
 dfx stop
 rm -rf .dfx
+mkdir .dfx
 
 ALICE_HOME=./tmp/alice
 BOB_HOME=./tmp/bob
@@ -473,5 +480,3 @@ echo
 echo == get alice History
 echo
 call getUserTransactions "'($ALICE_PUBLIC_KEY, 0, 1000)'"
-
-dfx stop
