@@ -290,23 +290,7 @@ shared(msg) actor class Token(
         if (allowed.allowance < value + fee) { return #Err(#InsufficientAllowance); };
         _chargeFee(fromAccount, fee);
         _transfer(fromAccount, Account.fromPrincipal(to, null), value);
-        let allowed_new : Allowance = {
-            allowance = allowed.allowance - value - fee;
-            expires_at = allowed.expires_at;
-        };
-        if (allowed_new.allowance != 0) {
-            let allowance_from = Types.unwrap(accountAllowances.get(fromAccount));
-            allowance_from.put(msg.caller, allowed_new);
-            accountAllowances.put(fromAccount, allowance_from);
-        } else if (allowed.allowance != 0) {
-            let allowance_from = Types.unwrap(accountAllowances.get(fromAccount));
-            allowance_from.delete(msg.caller);
-            if (allowance_from.size() == 0) {
-                accountAllowances.delete(fromAccount);
-            } else {
-                accountAllowances.put(fromAccount, allowance_from);
-            };
-        };
+        _updateAllowance(fromAccount, msg.caller, -1 * (value + fee), null);
         ignore addRecord(
             msg.caller, "transferFrom",
             [
