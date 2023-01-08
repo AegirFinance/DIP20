@@ -192,27 +192,42 @@ echo
 echo == Alice grants Dan permission to spend 1 of her tokens, should success.
 echo
 
-call approve "'($DAN_PUBLIC_KEY, 1_000)'"
+call icrc2_approve "'(record {spender=$DAN_PUBLIC_KEY; amount=1_000})'"
 
 echo
-echo == Alice grants Dan permission to spend 0 of her tokens, should success.
+echo == Alice revokes Dans permission to spend her tokens, should success.
 echo
 
-call approve "'($DAN_PUBLIC_KEY, 0)'"
+call icrc2_approve "'(record {spender=$DAN_PUBLIC_KEY; amount=-1_000})'"
+
+echo
+echo == Alices allowances
+echo
+
+alices_allowances() {
+    echo Alices allowance for Bob = $( \
+        call icrc2_allowance "'(record {account=$ALICE_ACCOUNT; spender=$BOB_PUBLIC_KEY})'" \
+    )
+    echo Alices allowance for Dan = $( \
+        call icrc2_allowance "'(record {account=$ALICE_ACCOUNT; spender=$DAN_PUBLIC_KEY})'" \
+    )
+}
+
+alices_allowances
 
 echo
 echo == Bob grants Dan permission to spend 1 of her tokens, should success.
 echo
 
 HOME=$BOB_HOME
-call approve "'($DAN_PUBLIC_KEY, 1_000)'"
+call icrc2_approve "'(record {spender=$DAN_PUBLIC_KEY; amount=1_000})'"
 
 echo
 echo == Dan transfer 1 token from Bob to Alice, should success.
 echo
 
 HOME=$DAN_HOME
-call transferFrom "'($BOB_PUBLIC_KEY, $ALICE_PUBLIC_KEY, 1_000)'"
+call icrc2_transfer_from "'(record {from=$BOB_ACCOUNT; to=$ALICE_ACCOUNT; amount=1_000})'"
 
 
 echo
@@ -220,7 +235,7 @@ echo == Transfer 40.9 tokens from Bob to Alice, should success.
 echo
 
 HOME=$BOB_HOME
-call icrc1_transfer "'(record {to=$ALICE_PUBLIC_KEY; amount=40_900})'"
+call icrc1_transfer "'(record {to=$ALICE_ACCOUNT; amount=40_900})'"
 
 echo
 echo == token balances for Alice, Bob, Dan and FeeTo.
@@ -233,25 +248,20 @@ echo == Alice grants Dan permission to spend 50 of her tokens, should success.
 echo
 
 HOME=$ALICE_HOME
-call approve "'($DAN_PUBLIC_KEY, 50_000)'"
+call icrc2_approve "'(record {spender=$DAN_PUBLIC_KEY; amount=50_000})'"
 
 echo
 echo == Alices allowances 
 echo
 
-echo Alices allowance for Dan = $( \
-    call allowance "'($ALICE_PUBLIC_KEY, $DAN_PUBLIC_KEY)'" \
-)
-echo Alices allowance for Bob = $( \
-    call allowance "'($ALICE_PUBLIC_KEY, $BOB_PUBLIC_KEY)'" \
-)
+alices_allowances
 
 echo
 echo == Dan transfers 40 tokens from Alice to Bob, should success.
 echo
 
 HOME=$DAN_HOME
-call transferFrom "'($ALICE_PUBLIC_KEY, $BOB_PUBLIC_KEY, 40_000)'"
+call icrc2_transfer_from "'(record {from=$ALICE_ACCOUNT; to=$BOB_ACCOUNT; amount=40_000})'"
 
 echo
 echo == Alice transfer 1 tokens To Dan
@@ -265,7 +275,7 @@ echo == Dan transfers 40 tokens from Alice to Bob, should Return false, as allow
 echo
 
 HOME=$DAN_HOME
-call transferFrom "'($ALICE_PUBLIC_KEY, $BOB_PUBLIC_KEY, 40_000)'"
+call icrc2_transfer_from "'(record {from=$ALICE_ACCOUNT; to=$BOB_ACCOUNT; amount=40_000})'"
 
 echo
 echo == Token balance for Alice and Bob and Dan
@@ -274,41 +284,30 @@ echo
 balances
 
 echo
-echo == Alice allowances
+echo == Alices allowances
 echo
 
-echo Alices allowance for Bob = $( \
-    call allowance "'($ALICE_PUBLIC_KEY, $BOB_PUBLIC_KEY)'" \
-)
-echo Alices allowance for Dan = $( \
-    call allowance "'($ALICE_PUBLIC_KEY, $DAN_PUBLIC_KEY)'" \
-)
-
+alices_allowances
 
 echo
 echo == Alice grants Bob permission to spend 100 of her tokens
 echo
 
 HOME=$ALICE_HOME
-call approve "'($BOB_PUBLIC_KEY, 100_000)'"
+call icrc2_approve "'(record {spender=$BOB_PUBLIC_KEY; amount=100_000})'"
 
 echo
-echo == Alice allowances
+echo == Alices allowances
 echo
 
-echo Alices allowance for Bob = $( \
-    call allowance "'($ALICE_PUBLIC_KEY, $BOB_PUBLIC_KEY)'" \
-)
-echo Alices allowance for Dan = $( \
-    call allowance "'($ALICE_PUBLIC_KEY, $DAN_PUBLIC_KEY)'" \
-)
+alices_allowances
 
 echo
 echo == Bob transfers 99 tokens from Alice to Dan
 echo
 
 HOME=$BOB_HOME
-call transferFrom "'($ALICE_PUBLIC_KEY, $DAN_PUBLIC_KEY, 99_000)'"
+call icrc2_transfer_from "'(record {from=$ALICE_ACCOUNT; to=$DAN_ACCOUNT; amount=99_000})'"
 
 echo
 echo == Balances
@@ -317,51 +316,50 @@ echo
 balances
 
 echo
-echo == Alice allowances
+echo == Alices allowances
 echo
 
-echo Alices allowance for Bob = $( call allowance "'($ALICE_PUBLIC_KEY, $BOB_PUBLIC_KEY)'" )
-echo Alices allowance for Dan = $( call allowance "'($ALICE_PUBLIC_KEY, $DAN_PUBLIC_KEY)'" )
+alices_allowances
 
 echo
 echo == Dan grants Bob permission to spend 100 of this tokens, should success.
 echo
 
 HOME=$DAN_HOME
-call approve "'($BOB_PUBLIC_KEY, 100_000)'"
+call icrc2_approve "'(record {spender=$BOB_PUBLIC_KEY; amount=100_000})'"
 
 echo
-echo == Dan grants Bob permission to spend 50 of this tokens
+echo == Dan lowers Bob permission to spend 50 of this tokens
 echo
 
-call approve "'($BOB_PUBLIC_KEY, 50_000)'"
+call icrc2_approve "'(record {spender=$BOB_PUBLIC_KEY; amount=-50_000})'"
 
 echo
 echo == Dan allowances
 echo
 
-echo Dan allowance for Bob = $( \
-    call allowance "'($DAN_PUBLIC_KEY, $BOB_PUBLIC_KEY)'" \
-)
 echo Dan allowance for Alice = $( \
-    call allowance "'($DAN_PUBLIC_KEY, $ALICE_PUBLIC_KEY)'" \
+    call icrc2_allowance "'(record {account=$DAN_ACCOUNT; spender=$ALICE_PUBLIC_KEY})'" \
+)
+echo Dan allowance for Bob = $( \
+    call icrc2_allowance "'(record {account=$DAN_ACCOUNT; spender=$BOB_PUBLIC_KEY})'" \
 )
 
 echo
 echo == Dan change Bobs permission to spend 40 of this tokens instead of 50
 echo
 
-call approve "'($BOB_PUBLIC_KEY, 40_000)'"
+call icrc2_approve "'(record {spender=$BOB_PUBLIC_KEY; amount=-10_000})'"
 
 echo
 echo == Dan allowances
 echo
 
-echo Dan allowance for Bob = $( \
-    call allowance "'($DAN_PUBLIC_KEY, $BOB_PUBLIC_KEY)'" \
-)
 echo Dan allowance for Alice = $( \
-    call allowance "'($DAN_PUBLIC_KEY, $ALICE_PUBLIC_KEY)'" \
+    call icrc2_allowance "'(record {account=$DAN_ACCOUNT; spender=$ALICE_PUBLIC_KEY})'" \
+)
+echo Dan allowance for Bob = $( \
+    call icrc2_allowance "'(record {account=$DAN_ACCOUNT; spender=$BOB_PUBLIC_KEY})'" \
 )
 
 echo
