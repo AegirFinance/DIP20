@@ -789,7 +789,9 @@ shared(msg) actor class Token(
             return Nat.compare(b.1, a.1);
         };
         let sorted = Array.sort(temp, order);
-        let limit_: Nat = if (start + limit > temp.size()) {
+        let limit_: Nat = if (limit == 0) {
+            temp.size() - start
+        if (start + limit > temp.size()) {
             temp.size() - start
         } else {
             limit
