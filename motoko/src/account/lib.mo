@@ -1,11 +1,3 @@
-/**
- * Module     : account.mo
- * Copyright  : 2021 DFinance Team
- * License    : Apache 2.0 with LLVM Exception
- * Maintainer : DFinance Team <hello@dfinance.ai>
- * Stability  : Experimental
- */
-
 import Array "mo:base/Array";
 import Blob "mo:base/Blob";
 import Buffer "mo:base/Buffer";
