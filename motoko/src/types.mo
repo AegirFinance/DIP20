@@ -46,6 +46,33 @@ module {
         created_at_time: ?Nat64;
     };
 
+    public type TxIndex = Nat;
+
+    public type ICRC1TransferArgs = {
+        from_subaccount: ?Account.Subaccount;
+        to: Account.Account;
+        amount: Nat;
+        fee: ?Nat;
+        memo: ?Blob;
+        created_at_time: ?Nat64;
+    };
+
+    public type ICRC1TransferError = {
+        #BadFee: { expected_fee: Nat };
+        #BadBurn: { min_burn_amount: Nat };
+        #InsufficientFunds: { balance: Nat };
+        #TooOld;
+        #CreatedInFuture: { ledger_time: Nat64 };
+        #Duplicate: { duplicate_of: Nat };
+        #TemporarilyUnavailable;
+        #GenericError: { error_code: Nat; message: Text };
+    };
+
+    public type ICRC1TransferResult = {
+        #Ok: TxIndex;
+        #Err: ICRC1TransferError;
+    };
+
     public func unwrap<T>(x : ?T) : T =
         switch x {
             case null { P.unreachable() };

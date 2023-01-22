@@ -54,7 +54,7 @@ shared(msg) actor class Token(
             balances : [(Account.Account, Nat)];
             allowances : [(Account.Account, [(Principal, Allowance)])];
             duplicates : [{
-                index : TxIndex;
+                index : Types.TxIndex;
                 args : {
                     caller: Principal;
                     from: Account.Account;
@@ -72,9 +72,8 @@ shared(msg) actor class Token(
     type Operation = Types.Operation;
     type TransactionStatus = Types.TransactionStatus;
     type TxRecord = Types.TxRecord;
-    type TxIndex = Nat;
     type TxLogEntry = {
-        index : TxIndex;
+        index : Types.TxIndex;
         args : Types.Transaction;
     };
     type TxLog = Buffer.Buffer<TxLogEntry>;
@@ -569,7 +568,7 @@ shared(msg) actor class Token(
         return #Ok(mints.size());
     };
 
-    public shared(msg) func mintAllAccounts(mints: [(Account.Account, Nat)]): async ICRC1TransferResult {
+    public shared(msg) func mintAllAccounts(mints: [(Account.Account, Nat)]): async Types.ICRC1TransferResult {
         if (msg.caller != owner_) {
             return #Err(#GenericError({error_code = 0; message = "Unauthorized"}));
         };
@@ -605,6 +604,28 @@ shared(msg) actor class Token(
             user, "burn",
             [
                 ("from", #Principal(user)),
+                ("value", #U64(u64(amount))),
+                ("fee", #U64(u64(0)))
+            ]
+        );
+        txcounter += 1;
+        return #Ok(txcounter - 1);
+    };
+
+    public shared(msg) func burnForAccount(fromAccount: Account.Account, amount: Nat): async TxReceipt {
+        if (msg.caller != owner_ and msg.caller != fromAccount.owner) {
+            return #Err(#Unauthorized);
+        };
+        let from_balance = _balanceOf(fromAccount);
+        if (from_balance < amount) {
+            return #Err(#InsufficientBalance);
+        };
+        totalSupply_ -= amount;
+        accountBalances.put(fromAccount, from_balance - amount);
+        ignore addRecord(
+            fromAccount.owner, "burn",
+            [
+                ("from", #Principal(fromAccount.owner)),
                 ("value", #U64(u64(amount))),
                 ("fee", #U64(u64(0)))
             ]
@@ -791,7 +812,7 @@ shared(msg) actor class Token(
         let sorted = Array.sort(temp, order);
         let limit_: Nat = if (limit == 0) {
             temp.size() - start
-        if (start + limit > temp.size()) {
+        } else if (start + limit > temp.size()) {
             temp.size() - start
         } else {
             limit
@@ -872,32 +893,7 @@ shared(msg) actor class Token(
         return _balanceOf(account);
     };
 
-    public type ICRC1TransferArgs = {
-        from_subaccount: ?Account.Subaccount;
-        to: Account.Account;
-        amount: Nat;
-        fee: ?Nat;
-        memo: ?Blob;
-        created_at_time: ?Nat64;
-    };
-
-    public type ICRC1TransferError = {
-        #BadFee: { expected_fee: Nat };
-        #BadBurn: { min_burn_amount: Nat };
-        #InsufficientFunds: { balance: Nat };
-        #TooOld;
-        #CreatedInFuture: { ledger_time: Nat64 };
-        #Duplicate: { duplicate_of: Nat };
-        #TemporarilyUnavailable;
-        #GenericError: { error_code: Nat; message: Text };
-    };
-
-    public type ICRC1TransferResult = {
-        #Ok: TxIndex;
-        #Err: ICRC1TransferError;
-    };
-
-    public shared(msg) func icrc1_transfer(args: ICRC1TransferArgs) : async ICRC1TransferResult {
+    public shared(msg) func icrc1_transfer(args: Types.ICRC1TransferArgs) : async Types.ICRC1TransferResult {
         let fromAccount = Account.fromPrincipal(msg.caller, args.from_subaccount);
         let toAccount = args.to;
         let record: Types.Transaction = {
@@ -985,7 +981,7 @@ shared(msg) actor class Token(
         return #Ok(txcounter - 1);
     };
 
-    func dedupeTransaction(args: Types.Transaction) : Result.Result<(), ICRC1TransferError> {
+    func dedupeTransaction(args: Types.Transaction) : Result.Result<(), Types.ICRC1TransferError> {
         switch (args.created_at_time) {
             case (null) {};
             case (?t) {
@@ -1007,7 +1003,7 @@ shared(msg) actor class Token(
         #ok(())
     };
 
-    func findTransaction(args: Types.Transaction, log: TxLog): ?TxIndex {
+    func findTransaction(args: Types.Transaction, log: TxLog): ?Types.TxIndex {
         for (tx in log.vals()) {
             if (args == tx.args) {
                 return ?tx.index;
@@ -1030,7 +1026,7 @@ shared(msg) actor class Token(
         newLog
     };
 
-    func logTransaction(index: TxIndex, args: Types.Transaction, log: TxLog): TxLog {
+    func logTransaction(index: Types.TxIndex, args: Types.Transaction, log: TxLog): TxLog {
         // Only prune the transaction log when logging a successful transaction, because at this point the user has paid the fee.
         let newLog = pruneTransactionLog(log);
         newLog.add({index; args});
@@ -1071,8 +1067,8 @@ shared(msg) actor class Token(
             fee = fee;
             mintingAccount = mintingAccount;
             balances = Iter.toArray(accountBalances.entries());
-            allowances = Buffer.toArray(allowancesTemp);
-            duplicates = Buffer.toArray(duplicates);
+            allowances = allowancesTemp.toArray();
+            duplicates = duplicates.toArray();
         });
     };
 
